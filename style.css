@@ -411,7 +411,6 @@ img { display: block; }
 .pulse-dot { width: 8px; height: 8px; background: var(--success); border-radius: 50%; animation: pulse 1.5s ease infinite; }
 
 .hero-stats { display: flex; align-items: center; gap: 2rem; flex-wrap: wrap; }
-.hero-stat { }
 .hero-stat-value { font-size: 1.5rem; font-weight: 800; letter-spacing: -0.02em; }
 .hero-stat-label { font-size: 0.75rem; color: var(--text-2); margin-top: 0.15rem; }
 .stat-divider { width: 1px; height: 40px; background: var(--border); }
@@ -760,7 +759,6 @@ img { display: block; }
 .product-name { font-size: 1rem; font-weight: 700; margin-bottom: 0.4rem; }
 .product-desc { font-size: 0.8rem; color: var(--text-2); margin-bottom: 1rem; line-height: 1.5; }
 .product-stats { display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.75rem; margin-bottom: 1rem; background: rgba(255,255,255,0.03); border-radius: var(--radius-sm); padding: 1rem; }
-.product-stat { }
 .ps-label { font-size: 0.65rem; color: var(--text-2); text-transform: uppercase; letter-spacing: 0.04em; }
 .ps-value { font-size: 0.9rem; font-weight: 700; font-family: var(--mono); margin-top: 0.15rem; }
 .product-features { list-style: none; margin-bottom: 1rem; display: flex; flex-direction: column; gap: 0.3rem; }
@@ -826,7 +824,6 @@ img { display: block; }
    WITHDRAWALS PAGE
    ============================================================ */
 .withdrawal-balance-card { padding: 2rem; display: flex; align-items: center; justify-content: space-between; margin-bottom: 1.5rem; flex-wrap: wrap; gap: 1.5rem; }
-.wb-left { }
 .wb-label { font-size: 0.75rem; color: var(--text-2); text-transform: uppercase; letter-spacing: 0.05em; }
 .wb-amount { font-size: 2.5rem; font-weight: 800; font-family: var(--mono); margin: 0.25rem 0; }
 .wb-min { font-size: 0.75rem; color: var(--text-3); }
@@ -936,7 +933,6 @@ img { display: block; }
 .admin-tabs { display: flex; gap: 0.25rem; padding: 0.5rem; flex-wrap: wrap; margin-bottom: 1.5rem; overflow-x: auto; }
 .admin-tab { padding: 0.6rem 1rem; border-radius: var(--radius-sm); font-size: 0.8rem; font-weight: 600; color: var(--text-2); transition: all 0.2s; white-space: nowrap; cursor: pointer; }
 .admin-tab.active { background: var(--primary); color: white; }
-.admin-section { }
 .admin-section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.25rem; }
 .admin-table-wrap { overflow-x: auto; }
 .admin-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
@@ -996,4 +992,10 @@ img { display: block; }
   .withdrawal-balance-card { flex-direction: column; align-items: flex-start; }
   .hero-actions { flex-direction: column; align-items: flex-start; }
   .wallet-stats { gap: 1.5rem; }
+}
+
+@keyframes shimmer {
+  0% { border-color: rgba(99,102,241,0.3); box-shadow: 0 0 0px rgba(99,102,241,0); }
+  50% { border-color: rgba(34,211,238,0.6); box-shadow: 0 0 12px rgba(99,102,241,0.3); }
+  100% { border-color: rgba(99,102,241,0.3); box-shadow: 0 0 0px rgba(99,102,241,0); }
 }

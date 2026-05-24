@@ -8,9 +8,10 @@
 <meta name="theme-color" content="#050b18">
 <title>CashX — Earn While You Sleep</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="icon" type="image/png" href="favicon.png">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
 <link href="https://fonts.googleapis.com/css2?family=Sora:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="https://checkout.razorpay.com/v1/checkout.js"></script>
 <style>
 /* ============================================================
    CSS VARIABLES & RESET
@@ -719,10 +720,13 @@ const Auth = {
     return data;
   },
 
-  async signUpEmail(email, password, fullName) {
-    const { data, error } = await supabaseClient.auth.signUp({ email, password, options: { data: { full_name: fullName } } });
-    return { data, error };
-  },
+ async signUpEmail(email, password, fullName, referrerId = null) {
+  const { data, error } = await supabaseClient.auth.signUp({ 
+    email, password, 
+    options: { data: { full_name: fullName, referred_by: referrerId } } 
+  });
+  return { data, error };
+},
 
   async signInEmail(email, password) {
     const { data, error } = await supabaseClient.auth.signInWithPassword({ email, password });
@@ -761,22 +765,37 @@ const Router = {
   protectedRoutes: ['dashboard','cart','wallet','orders','withdrawals','profile','admin'],
   adminRoutes: ['admin'],
 
-  navigate(route) {
-    window.location.hash = route;
+navigate(route) {
+  if (window.location.hash === '#' + route) {
     this.handleRoute();
-  },
+  } else {
+    window.location.hash = route;
+  }
+},
 
- handleRoute: async function() {
+handleRoute: async function() {
   const hash = window.location.hash.replace('#', '') || 'landing';
   const route = hash.split('?')[0];
-  if (this.protectedRoutes.includes(route) && !Auth.isLoggedIn()) { this.navigate('login'); return; }
-  if (this.adminRoutes.includes(route)) {
-    if (!Auth.currentProfile) await Auth.loadProfile();
-    if (!Auth.isAdmin()) { this.navigate('dashboard'); Toast.show('Access denied. Admin only.', 'error'); return; }
+
+  // Wait for profile to load if user is logged in but profile missing
+  if (Auth.isLoggedIn() && !Auth.currentProfile) {
+    await Auth.loadProfile();
   }
+
+  if (this.protectedRoutes.includes(route) && !Auth.isLoggedIn()) { 
+    this.navigate('login'); return; 
+  }
+  if (this.adminRoutes.includes(route)) {
+    if (!Auth.isAdmin()) { 
+      this.navigate('dashboard'); 
+      Toast.show('Access denied. Admin only.', 'error'); 
+      return; 
+    }
+  }
+
   const renderFn = this.routes[route];
-  if (renderFn && window[renderFn]) window[renderFn]();
-  else window.renderLanding?.();
+  if (renderFn && window[renderFn]) await window[renderFn]();
+  else await window.renderLanding?.();
   this.updateNav(route);
 },
 
@@ -948,8 +967,6 @@ function clearAllTimers() {
     clearTimeout(t); 
   }); 
   Object.keys(ActiveTimers).forEach(k => delete ActiveTimers[k]);
-  // Small yield to let UI breathe before next render
-  return new Promise(r => setTimeout(r, 0));
 }
 
 window.supabaseClient = supabaseClient;
@@ -1255,46 +1272,22 @@ window.renderLogin = async function() {
             <button class="auth-tab active" id="tab-login" onclick="switchAuthTab('login')">Sign In</button>
             <button class="auth-tab" id="tab-register" onclick="switchAuthTab('register')">Register</button>
           </div>
-          <div class="auth-method-toggle">
-            <button class="method-btn active" id="method-email" onclick="switchAuthMethod('email')">📧 Email</button>
-            <button class="method-btn" id="method-phone" onclick="switchAuthMethod('phone')">📱 Phone OTP</button>
-          </div>
           <div id="email-forms">
-            <div id="login-form">
-              <div class="form-group"><label class="form-label">Email Address</label><input type="email" class="form-input" id="login-email" placeholder="you@example.com" autocomplete="email"></div>
-              <div class="form-group"><label class="form-label">Password</label><input type="password" class="form-input" id="login-password" placeholder="••••••••" autocomplete="current-password" onkeydown="if(event.key==='Enter')handleEmailLogin()"></div>
-              <button class="btn btn-primary w-full btn-lg" id="login-btn" onclick="handleEmailLogin()">Sign In <span class="btn-arrow">→</span></button>
-            </div>
-            <div id="register-form" style="display:none">
-              <div class="form-group"><label class="form-label">Full Name</label><input type="text" class="form-input" id="reg-name" placeholder="Your full name"></div>
-              <div class="form-group"><label class="form-label">Email Address</label><input type="email" class="form-input" id="reg-email" placeholder="you@example.com"></div>
-              <div class="form-group"><label class="form-label">Password</label><input type="password" class="form-input" id="reg-password" placeholder="Min 8 characters"></div>
-              <button class="btn btn-primary w-full btn-lg" id="register-btn" onclick="handleEmailRegister()">Create Account <span class="btn-arrow">→</span></button>
-            </div>
-          </div>
-          <div id="phone-forms" style="display:none">
-            <div id="phone-input-step">
-              <div class="form-group"><label class="form-label">Phone Number</label>
-                <div class="phone-input-group">
-                  <span class="phone-prefix">🇮🇳 +91</span>
-                  <input type="tel" class="form-input phone-input" id="phone-number" placeholder="9876543210" maxlength="10">
-                </div>
-              </div>
-              <button class="btn btn-primary w-full btn-lg" id="otp-send-btn" onclick="handleSendOTP()">Send OTP <span class="btn-arrow">→</span></button>
-            </div>
-            <div id="otp-verify-step" style="display:none">
-              <div class="otp-sent-msg"><span>✓</span> OTP sent to <strong id="otp-phone-display"></strong><button onclick="document.getElementById('phone-input-step').style.display='block';document.getElementById('otp-verify-step').style.display='none'" class="link-btn">Change</button></div>
-              <div class="form-group"><label class="form-label">Enter 6-digit OTP</label><input type="text" class="form-input otp-input" id="otp-code" placeholder="• • • • • •" maxlength="6" inputmode="numeric"></div>
-              <button class="btn btn-primary w-full btn-lg" id="otp-verify-btn" onclick="handleVerifyOTP()">Verify & Continue <span class="btn-arrow">→</span></button>
-              <div class="otp-resend" id="otp-resend">
-                <span id="resend-timer">Resend in <strong id="otp-countdown">30</strong>s</span>
-                <button id="resend-btn" onclick="handleSendOTP()" class="link-btn" style="display:none">Resend OTP</button>
-              </div>
-            </div>
-          </div>
-          <div class="auth-divider"><span>Secure • Encrypted • Trusted</span></div>
-          <div class="auth-trust"><span>🔒 Bank-grade security</span><span>⚡ Instant login</span></div>
-        </div>
+  <div id="login-form">
+    <div class="form-group"><label class="form-label">Email Address</label><input type="email" class="form-input" id="login-email" placeholder="you@example.com" autocomplete="email"></div>
+    <div class="form-group"><label class="form-label">Password</label><input type="password" class="form-input" id="login-password" placeholder="••••••••" autocomplete="current-password" onkeydown="if(event.key==='Enter')handleEmailLogin()"></div>
+    <button class="btn btn-primary w-full btn-lg" id="login-btn" onclick="handleEmailLogin()">Sign In <span class="btn-arrow">→</span></button>
+  </div>
+  <div id="register-form" style="display:none">
+    <div class="form-group"><label class="form-label">Full Name</label><input type="text" class="form-input" id="reg-name" placeholder="Your full name"></div>
+    <div class="form-group"><label class="form-label">Email Address</label><input type="email" class="form-input" id="reg-email" placeholder="you@example.com"></div>
+    <div class="form-group"><label class="form-label">Password</label><input type="password" class="form-input" id="reg-password" placeholder="Min 8 characters"></div>
+    <div class="form-group"><label class="form-label">Referral Code (Optional)</label><input type="text" class="form-input" id="reg-referral" placeholder="Enter referral code" maxlength="8" style="text-transform:uppercase"></div>
+    <button class="btn btn-primary w-full btn-lg" id="register-btn" onclick="handleEmailRegister()">Create Account <span class="btn-arrow">→</span></button>
+  </div>
+</div>
+<div class="auth-divider"><span>Secure • Encrypted • Trusted</span></div>
+<div class="auth-trust"><span>🔒 Bank-grade security</span><span>⚡ Instant login</span></div>
         <p class="auth-back"><button onclick="Router.navigate('landing')" class="link-btn">← Back to Home</button></p>
       </div>
     </div>
@@ -1306,12 +1299,6 @@ window.switchAuthTab = function(tab) {
   document.getElementById('tab-register').classList.toggle('active', tab==='register');
   document.getElementById('login-form').style.display = tab==='login' ? 'block' : 'none';
   document.getElementById('register-form').style.display = tab==='register' ? 'block' : 'none';
-};
-window.switchAuthMethod = function(method) {
-  document.getElementById('method-email').classList.toggle('active', method==='email');
-  document.getElementById('method-phone').classList.toggle('active', method==='phone');
-  document.getElementById('email-forms').style.display = method==='email' ? 'block' : 'none';
-  document.getElementById('phone-forms').style.display = method==='phone' ? 'block' : 'none';
 };
 window.handleEmailLogin = async function() {
   const email = document.getElementById('login-email').value.trim();
@@ -1327,47 +1314,25 @@ window.handleEmailRegister = async function() {
   const name = document.getElementById('reg-name').value.trim();
   const email = document.getElementById('reg-email').value.trim();
   const password = document.getElementById('reg-password').value;
+  const refCode = document.getElementById('reg-referral').value.trim().toUpperCase();
+
   if (!name || !email || !password) { Toast.show('Please fill all fields', 'warning'); return; }
   if (password.length < 8) { Toast.show('Password must be at least 8 characters', 'warning'); return; }
+
   const btn = document.getElementById('register-btn');
   btn.disabled = true; btn.textContent = 'Creating account...';
-  const { error } = await Auth.signUpEmail(email, password, name);
+
+  // Validate referral code if entered
+  let referrerId = null;
+  if (refCode) {
+    const { data: referrer } = await supabaseClient.from('users').select('id').eq('referral_code', refCode).single();
+    if (!referrer) { Toast.show('Invalid referral code', 'error'); btn.disabled = false; btn.innerHTML = 'Create Account <span class="btn-arrow">→</span>'; return; }
+    referrerId = referrer.id;
+  }
+
+  const { error } = await Auth.signUpEmail(email, password, name, referrerId);
   if (error) { Toast.show(error.message, 'error'); btn.disabled = false; btn.innerHTML = 'Create Account <span class="btn-arrow">→</span>'; }
-  else { Toast.show('Account created! Check your email to verify. 🎉', 'success'); switchAuthTab('login'); }
-};
-let otpPhone = '';
-window.handleSendOTP = async function() {
-  const phone = document.getElementById('phone-number').value.trim();
-  if (!/^\d{10}$/.test(phone)) { Toast.show('Enter a valid 10-digit phone number', 'warning'); return; }
-  otpPhone = phone;
-  const btn = document.getElementById('otp-send-btn');
-  btn.disabled = true; btn.textContent = 'Sending...';
-  const { error } = await Auth.sendOTP(phone);
-  if (error) { Toast.show(error.message, 'error'); btn.disabled = false; btn.innerHTML = 'Send OTP <span class="btn-arrow">→</span>'; return; }
-  document.getElementById('phone-input-step').style.display = 'none';
-  document.getElementById('otp-verify-step').style.display = 'block';
-  document.getElementById('otp-phone-display').textContent = `+91 ${phone}`;
-  Toast.show('OTP sent successfully!', 'success');
-  let seconds = 30;
-  const timer = document.getElementById('otp-countdown');
-  ActiveTimers['otp'] = setInterval(() => {
-    seconds--;
-    if (timer) timer.textContent = seconds;
-    if (seconds <= 0) {
-      clearInterval(ActiveTimers['otp']);
-      const rt = document.getElementById('resend-timer'); if (rt) rt.style.display = 'none';
-      const rb = document.getElementById('resend-btn'); if (rb) rb.style.display = 'inline';
-    }
-  }, 1000);
-};
-window.handleVerifyOTP = async function() {
-  const otp = document.getElementById('otp-code').value.trim();
-  if (!otp || otp.length < 6) { Toast.show('Enter the 6-digit OTP', 'warning'); return; }
-  const btn = document.getElementById('otp-verify-btn');
-  btn.disabled = true; btn.textContent = 'Verifying...';
-  const { error } = await Auth.verifyOTP(otpPhone, otp);
-  if (error) { Toast.show(error.message, 'error'); btn.disabled = false; btn.innerHTML = 'Verify & Continue <span class="btn-arrow">→</span>'; }
-  else { Toast.show('Verified! Welcome to CashX 🎉', 'success'); Router.navigate('dashboard'); }
+  else { Toast.show('Account created! Check your email to verify 🎉', 'success'); switchAuthTab('login'); }
 };
 
 // ============================================================
@@ -1375,14 +1340,9 @@ window.handleVerifyOTP = async function() {
 // ============================================================
 window.renderDashboard = async function() {
   await clearAllTimers();
-  Cache.clear();
-  const profile = await Auth.loadProfile();
-  let orders = [], transactions = [];
-  try { orders = (await DB.getOrders()).data; } catch(e) {}
-  try { transactions = await DB.getWalletTransactions(5); } catch(e) {}
-  const activeOrders = orders.filter(o => o.status === 'active');
-  const todayCashback = activeOrders.reduce((s, o) => s + parseFloat(o.cashback_per_day || 0), 0);
+  const profile = Auth.currentProfile;
 
+  // Render shell immediately with cached/existing profile
   document.getElementById('app').innerHTML = `
     <div class="dashboard-layout">
       ${renderSidebar('dashboard')}
@@ -1395,69 +1355,111 @@ window.renderDashboard = async function() {
               <p class="page-sub">Here's your portfolio overview</p>
             </div>
           </div>
-          <div class="stats-grid">
-            <div class="stat-card glass-card animate-in">
-              <div class="stat-icon">💰</div>
-              <div><div class="stat-label">Wallet Balance</div><div class="stat-value">${Utils.formatCurrency(profile?.wallet_balance)}</div><div class="stat-change text-success">Available to withdraw</div></div>
-            </div>
-            <div class="stat-card glass-card animate-in" style="animation-delay:0.1s">
-              <div class="stat-icon">📈</div>
-              <div><div class="stat-label">Total Invested</div><div class="stat-value">${Utils.formatCurrency(profile?.total_invested)}</div><div class="stat-change">${orders.length} orders total</div></div>
-            </div>
-            <div class="stat-card glass-card animate-in" style="animation-delay:0.2s">
-              <div class="stat-icon">💸</div>
-              <div><div class="stat-label">Total Cashback</div><div class="stat-value">${Utils.formatCurrency(profile?.total_cashback_earned)}</div><div class="stat-change text-success">All time earnings</div></div>
-            </div>
-            <div class="stat-card glass-card animate-in" style="animation-delay:0.3s">
-              <div class="stat-icon">⚡</div>
-              <div><div class="stat-label">Today's Cashback</div><div class="stat-value text-success">${Utils.formatCurrency(todayCashback)}</div><div class="stat-change">${activeOrders.length} active products</div></div>
-            </div>
-          </div>
-
-          ${activeOrders.length > 0 ? `
-          <div class="section-card glass-card animate-in" style="animation-delay:0.4s">
-            <div class="card-header">
-              <h2 class="card-title">Active Products</h2>
-              <button class="btn btn-outline btn-sm" onclick="Router.navigate('orders')">View All</button>
-            </div>
-            <div class="active-orders-list">${activeOrders.slice(0,3).map(o => renderOrderCard(o)).join('')}</div>
-          </div>` : `
-          <div class="empty-state glass-card animate-in">
-            <div class="empty-icon">📦</div>
-            <h3>No active investments</h3>
-            <p>Start your first investment product to begin earning daily cashback</p>
-            <button class="btn btn-primary" onclick="Router.navigate('products')">Browse Products →</button>
-          </div>`}
-
-          <div class="section-card glass-card animate-in" style="animation-delay:0.5s">
-            <div class="card-header">
-              <h2 class="card-title">Recent Transactions</h2>
-              <button class="btn btn-outline btn-sm" onclick="Router.navigate('wallet')">View All</button>
-            </div>
-            ${transactions.length > 0 ? `
-            <div class="transactions-list">
-              ${transactions.map(t => `
-                <div class="transaction-item">
-                  <div class="tx-icon">${{cashback:'💸',withdrawal:'📤',reinvest:'🔄',refund:'↩️',bonus:'🎁',debit:'📤'}[t.type] || '💳'}</div>
-                  <div class="tx-info"><div class="tx-desc">${t.description || t.type}</div><div class="tx-time">${Utils.timeAgo(t.created_at)}</div></div>
-                  <div class="tx-amount ${['cashback','refund','bonus'].includes(t.type) ? 'text-success' : 'text-danger'}">${['cashback','refund','bonus'].includes(t.type) ? '+' : '-'}${Utils.formatCurrency(t.amount)}</div>
-                </div>
-              `).join('')}
-            </div>` : `<p class="empty-text">No transactions yet</p>`}
-          </div>
-
-          <div class="quick-actions glass-card animate-in">
-            <div class="card-header"><h2 class="card-title">Quick Actions</h2></div>
-            <div class="qa-grid">
-              <button class="qa-btn" onclick="Router.navigate('products')"><span>🛍️</span>Buy Plan</button>
-              <button class="qa-btn" onclick="Router.navigate('wallet')"><span>💰</span>Wallet</button>
-              <button class="qa-btn" onclick="Router.navigate('withdrawals')"><span>📤</span>Withdraw</button>
-              <button class="qa-btn" onclick="Router.navigate('orders')"><span>📋</span>Orders</button>
+          <div id="dashboard-body">
+            <div style="display:flex;flex-direction:column;gap:0.75rem">
+              ${Array(4).fill('<div style="height:80px;background:rgba(255,255,255,0.03);border-radius:var(--radius);border:1px solid var(--border);animation:pulse 1.5s ease infinite"></div>').join('')}
             </div>
           </div>
         </div>
       </div>
       ${renderMobileNav('dashboard')}
+    </div>
+  `;
+
+  // Load data in parallel
+  const [freshProfile, ordersRes, transactions] = await Promise.all([
+    Auth.loadProfile().catch(() => profile),
+    DB.getOrders().catch(() => ({ data: [] })),
+    DB.getWalletTransactions(5).catch(() => [])
+  ]);
+  const orders = ordersRes.data || [];
+  const activeOrders = orders.filter(o => o.status === 'active');
+  const todayCashback = activeOrders.reduce((s, o) => s + parseFloat(o.cashback_per_day || 0), 0);
+
+const dashBody = document.getElementById('dashboard-body');
+if (!dashBody) return;
+dashBody.innerHTML = `
+    <div class="stats-grid">
+      <div class="stat-card glass-card animate-in">
+        <div class="stat-icon">💰</div>
+        <div><div class="stat-label">Wallet Balance</div><div class="stat-value">${Utils.formatCurrency(freshProfile?.wallet_balance)}</div><div class="stat-change text-success">Available to withdraw</div></div>
+      </div>
+      <div class="stat-card glass-card animate-in" style="animation-delay:0.1s">
+        <div class="stat-icon">📈</div>
+        <div><div class="stat-label">Total Invested</div><div class="stat-value">${Utils.formatCurrency(freshProfile?.total_invested)}</div><div class="stat-change">${orders.length} orders total</div></div>
+      </div>
+      <div class="stat-card glass-card animate-in" style="animation-delay:0.2s">
+        <div class="stat-icon">💸</div>
+        <div><div class="stat-label">Total Cashback</div><div class="stat-value">${Utils.formatCurrency(freshProfile?.total_cashback_earned)}</div><div class="stat-change text-success">All time earnings</div></div>
+      </div>
+      <div class="stat-card glass-card animate-in" style="animation-delay:0.3s">
+        <div class="stat-icon">⚡</div>
+        <div><div class="stat-label">Today's Cashback</div><div class="stat-value text-success">${Utils.formatCurrency(todayCashback)}</div><div class="stat-change">${activeOrders.length} active products</div></div>
+      </div>
+    </div>
+
+    <div class="glass-card animate-in" style="animation-delay:0.4s;padding:1.25rem;margin-bottom:1.25rem;background:linear-gradient(135deg,rgba(99,102,241,0.1),rgba(34,211,238,0.05));border:1px solid rgba(99,102,241,0.25)">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem">
+        <div>
+          <div style="font-size:0.7rem;font-weight:700;color:var(--text-2);text-transform:uppercase;letter-spacing:0.05em">🎁 Refer & Earn</div>
+          <div style="font-size:0.8rem;color:var(--text-2);margin-top:0.2rem">₹150 bonus + 1% daily cashback for 30 days</div>
+        </div>
+        <div style="animation:shimmer 2s ease-in-out infinite;font-size:1.5rem">✨</div>
+      </div>
+      <div style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.75rem">
+        <div style="flex:1;background:rgba(255,255,255,0.05);border:1px solid var(--border);border-radius:var(--radius-sm);padding:0.6rem 1rem;font-family:var(--mono);font-weight:700;font-size:1rem;letter-spacing:0.15em;color:var(--primary-light)">
+          ${freshProfile?.referral_code || '------'}
+        </div>
+        <button onclick="navigator.clipboard.writeText('${freshProfile?.referral_code || ''}').then(()=>Toast.show('Referral code copied!','success'))" style="padding:0.6rem 0.875rem;background:rgba(99,102,241,0.15);border:1px solid rgba(99,102,241,0.3);border-radius:var(--radius-sm);color:var(--primary-light);cursor:pointer;font-size:0.9rem" title="Copy Code">
+          <i class="fa-regular fa-copy"></i>
+        </button>
+        <button onclick="shareReferral('${freshProfile?.referral_code || ''}')" style="padding:0.6rem 0.875rem;background:rgba(34,211,238,0.15);border:1px solid rgba(34,211,238,0.3);border-radius:var(--radius-sm);color:var(--accent);cursor:pointer;font-size:0.9rem" title="Share Link">
+          <i class="fa-solid fa-share-nodes"></i>
+        </button>
+      </div>
+      <div style="font-size:0.72rem;color:var(--text-3)">Share your referral link and earn when friends invest</div>
+    </div>
+
+    ${activeOrders.length > 0 ? `
+    <div class="section-card glass-card animate-in" style="animation-delay:0.5s">
+      <div class="card-header">
+        <h2 class="card-title">Active Products</h2>
+        <button class="btn btn-outline btn-sm" onclick="Router.navigate('orders')">View All</button>
+      </div>
+      <div class="active-orders-list">${activeOrders.slice(0,3).map(o => renderOrderCard(o)).join('')}</div>
+    </div>` : `
+    <div class="empty-state glass-card animate-in">
+      <div class="empty-icon">📦</div>
+      <h3>No active investments</h3>
+      <p>Start your first investment to begin earning daily cashback</p>
+      <button class="btn btn-primary" onclick="Router.navigate('products')">Browse Products →</button>
+    </div>`}
+
+    <div class="section-card glass-card animate-in" style="animation-delay:0.6s">
+      <div class="card-header">
+        <h2 class="card-title">Recent Transactions</h2>
+        <button class="btn btn-outline btn-sm" onclick="Router.navigate('wallet')">View All</button>
+      </div>
+      ${transactions.length > 0 ? `
+      <div class="transactions-list">
+        ${transactions.map(t => `
+          <div class="transaction-item">
+            <div class="tx-icon">${{cashback:'💸',withdrawal:'📤',reinvest:'🔄',refund:'↩️',bonus:'🎁',debit:'📤'}[t.type] || '💳'}</div>
+            <div class="tx-info"><div class="tx-desc">${t.description || t.type}</div><div class="tx-time">${Utils.timeAgo(t.created_at)}</div></div>
+            <div class="tx-amount ${['cashback','refund','bonus'].includes(t.type) ? 'text-success' : 'text-danger'}">${['cashback','refund','bonus'].includes(t.type) ? '+' : '-'}${Utils.formatCurrency(t.amount)}</div>
+          </div>
+        `).join('')}
+      </div>` : `<p class="empty-text">No transactions yet</p>`}
+    </div>
+
+    <div class="quick-actions glass-card animate-in">
+      <div class="card-header"><h2 class="card-title">Quick Actions</h2></div>
+      <div class="qa-grid">
+        <button class="qa-btn" onclick="Router.navigate('products')"><span>🛍️</span>Buy Plan</button>
+        <button class="qa-btn" onclick="Router.navigate('wallet')"><span>💰</span>Wallet</button>
+        <button class="qa-btn" onclick="Router.navigate('withdrawals')"><span>📤</span>Withdraw</button>
+        <button class="qa-btn" onclick="Router.navigate('orders')"><span>📋</span>Orders</button>
+      </div>
     </div>
   `;
   activeOrders.forEach(o => { if (o.next_cashback_at) startOrderTimer(o.id, o.next_cashback_at); });
@@ -1681,11 +1683,17 @@ window.showPaymentModal = function(product) {
           <div class="payment-product-amount">${Utils.formatCurrency(product.price)}</div>
           <div class="payment-product-details">${product.cashback_percent}% daily • ${product.duration_days} days • +${Utils.formatCurrency(cashbackPerDay)}/day</div>
         </div>
-        <div class="payment-methods">
-          <h4 class="pm-title">Select Payment Method</h4>
-          <label class="pm-option active" onclick="selectPM(this)"><input type="radio" name="pm" value="razorpay" checked><span class="pm-icon">💳</span><div class="pm-info"><div class="pm-name">Razorpay</div><div class="pm-sub">Cards, UPI, NetBanking, Wallets</div></div><span class="pm-badge">Secure</span></label>
-          <label class="pm-option" onclick="selectPM(this)"><input type="radio" name="pm" value="wallet"><span class="pm-icon">💰</span><div class="pm-info"><div class="pm-name">Wallet Balance</div><div class="pm-sub">Available: ${Utils.formatCurrency(Auth.currentProfile?.wallet_balance)}</div></div></label>
-        </div>
+       <div class="payment-methods">
+  <h4 class="pm-title">Payment Method</h4>
+  <label class="pm-option active">
+    <input type="radio" name="pm" value="wallet" checked>
+    <span class="pm-icon">💰</span>
+    <div class="pm-info">
+      <div class="pm-name">Wallet Balance</div>
+      <div class="pm-sub">Available: ${Utils.formatCurrency(Auth.currentProfile?.wallet_balance)}</div>
+    </div>
+  </label>
+</div>
         <div class="payment-summary-box glass-card-inner">
           <div class="payment-row"><span>Plan Amount</span><span>${Utils.formatCurrency(product.price)}</span></div>
           <div class="payment-row"><span>Daily Cashback</span><span class="text-success">+${Utils.formatCurrency(cashbackPerDay)}</span></div>
@@ -1718,7 +1726,7 @@ window.processPayment = async function(productId) {
     const price = parseFloat(product.price);
     
     if (balance < price) { 
-      Toast.show(`Insufficient balance. You have ${Utils.formatCurrency(balance)}, need ${Utils.formatCurrency(price)}.`, 'error'); 
+      Toast.show(`Insufficient balance. You have ${Utils.formatCurrency(balance)}, need ${Utils.formatCurrency(price)}. First add Money in Wallet.`, 'error'); 
       btn.disabled = false; 
       btn.innerHTML = `Pay ${Utils.formatCurrency(price)} →`; 
       return; 
@@ -1747,28 +1755,21 @@ window.processPayment = async function(productId) {
     }
 
     btn.textContent = 'Activating plan...';
-    await DB.activateOrder(order.id, 'wallet_payment');
-    
-    // Clear cache BEFORE reloading profile so fresh data loads
-    Cache.clear();
-    await Auth.loadProfile();
-    
-    document.getElementById('payment-modal')?.remove();
-    Toast.show(`Plan activated! ₹${price.toLocaleString('en-IN')} debited. Cashback starts in 24 hours 🎉`, 'success');
-    Router.navigate('dashboard'); 
-    return;
+  await DB.activateOrder(order.id, 'wallet_payment');
+
+// Handle referral bonus
+await handleReferralBonus(order.id, product.price);
+
+Cache.clear();
+await Auth.loadProfile();
+document.getElementById('payment-modal')?.remove();
+Toast.show(`Plan activated! Cashback starts in 24 hours 🎉`, 'success');
+Router.navigate('dashboard');
+return;
   }
-  if (typeof Razorpay !== 'undefined') {
-    const options = { key: APP_CONFIG.razorpayKeyId, amount: product.price * 100, currency: 'INR', name: 'CashX', description: product.name, order_id: order.razorpay_order_id, handler: async (response) => { await DB.activateOrder(order.id, response.razorpay_payment_id); await Auth.loadProfile(); document.getElementById('payment-modal')?.remove(); Toast.show('Payment successful! Plan activated 🎉', 'success'); Router.navigate('dashboard'); }, prefill: { email: Auth.currentUser?.email, contact: Auth.currentProfile?.phone }, theme: { color: '#6366f1' } };
-    new Razorpay(options).open();
-  } else {
-    await new Promise(r => setTimeout(r, 1500));
-    await DB.activateOrder(order.id, 'demo_payment_' + Date.now());
-    await Auth.loadProfile();
-    document.getElementById('payment-modal')?.remove();
-    Toast.show('Plan activated! (Demo Mode) Daily cashback starts in 24 hours 🎉', 'success');
-    Router.navigate('dashboard');
-  }
+Toast.show('Please deposit funds to your wallet first, then purchase.', 'info');
+btn.disabled = false;
+btn.innerHTML = `Pay ${Utils.formatCurrency(product.price)} →`;
 };
 
 // ============================================================
@@ -1842,9 +1843,13 @@ window.checkoutAll = async function() {
 // ============================================================
 window.renderWallet = async function() {
   await clearAllTimers();
-  let profile = Auth.currentProfile, transactions = [];
-  try { profile = await Auth.loadProfile(); } catch(e) {}
-  try { transactions = await DB.getWalletTransactions(50); } catch(e) {}
+const [profile, transactions, depositsRes] = await Promise.all([
+  Auth.loadProfile().catch(() => Auth.currentProfile),
+  DB.getWalletTransactions(50).catch(() => []),
+  supabaseClient.from('deposits').select('*').eq('user_id', Auth.currentUser.id).order('created_at', { ascending: false }).limit(10)
+]);
+const deposits = depositsRes.data || [];
+
   document.getElementById('app').innerHTML = `
     <div class="dashboard-layout">
       ${renderSidebar('wallet')}
@@ -1859,15 +1864,38 @@ window.renderWallet = async function() {
               <div class="wallet-sub">Updated just now</div>
             </div>
             <div class="wallet-actions">
-  <button class="wallet-action-btn" onclick="showDepositModal()"><span>💳</span> Deposit</button>
-  <button class="wallet-action-btn" onclick="Router.navigate('withdrawals')"><span>📤</span> Withdraw</button>
-  <button class="wallet-action-btn" onclick="Router.navigate('products')"><span>🔄</span> Reinvest</button>
-</div>
+              <button class="wallet-action-btn" onclick="showDepositModal()"><span>💳</span> Deposit</button>
+              <button class="wallet-action-btn" onclick="Router.navigate('withdrawals')"><span>📤</span> Withdraw</button>
+              <button class="wallet-action-btn" onclick="Router.navigate('products')"><span>🔄</span> Reinvest</button>
+            </div>
             <div class="wallet-stats">
               <div class="wallet-stat"><div class="ws-label">Total Earned</div><div class="ws-value">${Utils.formatCurrency(profile?.total_cashback_earned)}</div></div>
               <div class="wallet-stat"><div class="ws-label">Total Invested</div><div class="ws-value">${Utils.formatCurrency(profile?.total_invested)}</div></div>
             </div>
           </div>
+
+          <div class="section-card glass-card animate-in" style="margin-bottom:1.25rem">
+            <div class="card-header">
+              <h2 class="card-title">My Deposits</h2>
+              <button class="btn btn-primary btn-sm" onclick="showDepositModal()">+ New Deposit</button>
+            </div>
+            ${deposits.length === 0 ? '<p class="empty-text">No deposits yet</p>' : `
+            <div class="withdrawals-list">
+              ${deposits.map(d => `
+              <div class="withdrawal-item">
+                <div>
+                  <div class="wi-upi" style="font-family:var(--mono);font-size:0.8rem">UTR: ${d.utr}</div>
+                  <div class="wi-date">${Utils.formatDateTime(d.created_at)}</div>
+                  ${d.admin_note ? `<div class="wi-note">${d.admin_note}</div>` : ''}
+                </div>
+                <div class="wi-right">
+                  <div class="wi-amount">${Utils.formatCurrency(d.amount)}</div>
+                  ${Utils.statusBadge(d.status)}
+                </div>
+              </div>`).join('')}
+            </div>`}
+          </div>
+
           <div class="filter-bar glass-card">
             <button class="filter-btn active" onclick="filterTransactions('all', this)">All</button>
             <button class="filter-btn" onclick="filterTransactions('cashback', this)">Cashback</button>
@@ -1875,7 +1903,10 @@ window.renderWallet = async function() {
             <button class="filter-btn" onclick="filterTransactions('debit', this)">Debits</button>
           </div>
           <div class="section-card glass-card">
-            <div class="card-header"><h2 class="card-title">Transaction History</h2><span class="badge badge-info">${transactions.length} transactions</span></div>
+            <div class="card-header">
+              <h2 class="card-title">Transaction History</h2>
+              <span class="badge badge-info">${transactions.length} transactions</span>
+            </div>
             <div id="transactions-container" class="transactions-list">${renderTransactionList(transactions)}</div>
           </div>
         </div>
@@ -2064,11 +2095,25 @@ window.renderProfile = async function() {
               <div class="profile-email">${profile?.email || profile?.phone || ''}</div>
               ${profile?.role === 'admin' ? '<span class="badge badge-purple">Admin</span>' : ''}
             </div>
+            
             <div class="profile-form">
               <div class="form-group"><label class="form-label">Full Name</label><input type="text" class="form-input" id="p-name" value="${profile?.full_name || ''}"></div>
               <div class="form-group"><label class="form-label">Email</label><input type="email" class="form-input" id="p-email" value="${profile?.email || ''}" readonly style="opacity:0.6"></div>
-              <div class="form-group"><label class="form-label">Phone</label><input type="tel" class="form-input" id="p-phone" value="${profile?.phone || ''}" readonly style="opacity:0.6"></div>
+              <div class="form-group">
+  <label class="form-label">Phone Number</label>
+  <input type="tel" class="form-input" id="p-phone" value="${profile?.phone || ''}" placeholder="10-digit mobile number">
+</div>
               <div class="form-group"><label class="form-label">UPI ID (for withdrawals)</label><input type="text" class="form-input" id="p-upi" value="${profile?.upi_id || ''}" placeholder="yourname@upi"></div>
+             <div class="form-group">
+  <label class="form-label">Your Referral Code</label>
+  <div style="display:flex;gap:0.5rem;align-items:center">
+    <input type="text" class="form-input" value="${profile?.referral_code || 'Loading...'}" readonly style="font-family:var(--mono);font-weight:700;letter-spacing:0.1em;opacity:1">
+    <button onclick="navigator.clipboard.writeText('${profile?.referral_code || ''}').then(()=>Toast.show('Referral code copied!','success'))" class="btn btn-outline" style="flex-shrink:0">Copy</button>
+  </div>
+  <div style="font-size:0.72rem;margin-top:0.5rem;padding:0.5rem 0.75rem;border-radius:6px;background:linear-gradient(135deg,rgba(99,102,241,0.15),rgba(34,211,238,0.1));border:1px solid rgba(99,102,241,0.3);animation:shimmer 2s ease-in-out infinite;background-size:200% auto">
+  ✨ Share this code. Earn <strong style="color:#818cf8">₹150 bonus</strong> when your friend makes their first purchase. <strong style="color:#22d3ee"> Refer Now <i class="fa-solid fa-share"></i></strong>
+</div>
+</div>
               <button class="btn btn-primary btn-lg" id="save-profile-btn" onclick="saveProfile()">Save Changes</button>
             </div>
           </div>
@@ -2090,11 +2135,25 @@ window.renderProfile = async function() {
 window.saveProfile = async function() {
   const name = document.getElementById('p-name').value.trim();
   const upi = document.getElementById('p-upi').value.trim();
+  const phone = document.getElementById('p-phone').value.trim();
+
+  if (phone && !/^\d{10}$/.test(phone)) {
+    Toast.show('Enter a valid 10-digit phone number', 'warning');
+    return;
+  }
+
   const btn = document.getElementById('save-profile-btn');
   btn.disabled = true; btn.textContent = 'Saving...';
-  const { error } = await DB.updateProfile({ full_name: name, upi_id: upi });
-  if (error) Toast.show('Failed to save', 'error');
+
+  const { error } = await DB.updateProfile({ 
+    full_name: name, 
+    upi_id: upi,
+    phone: phone || null
+  });
+
+  if (error) Toast.show('Failed to save: ' + error.message, 'error');
   else Toast.show('Profile updated!', 'success');
+
   btn.disabled = false; btn.textContent = 'Save Changes';
 };
 
@@ -2117,6 +2176,8 @@ window.renderAdmin = async function() {
             <button class="admin-tab" onclick="switchAdminTab('users', this)">👥 Users</button>
             <button class="admin-tab" onclick="switchAdminTab('orders', this)">📋 Orders</button>
             <button class="admin-tab" onclick="switchAdminTab('withdrawals', this)">💸 Withdrawals</button>
+            <button class="admin-tab" onclick="switchAdminTab('deposits', this)">💰 Deposits</button>
+            <button class="admin-tab" onclick="switchAdminTab('upi', this)">📱 UPI Accounts</button>
             <button class="admin-tab" onclick="switchAdminTab('testimonials', this)">⭐ Reviews</button>
           </div>
           <div id="admin-content"><div class="loading-state"><div class="spinner"></div></div></div>
@@ -2132,7 +2193,9 @@ window.switchAdminTab = async function(tab, btn) {
   document.querySelectorAll('.admin-tab').forEach(b => b.classList.remove('active'));
   btn?.classList.add('active');
   const container = document.getElementById('admin-content');
-  container.innerHTML = '<div class="loading-state"><div class="spinner"></div></div>';
+container.innerHTML = '<div style="display:flex;flex-direction:column;gap:0.75rem;padding:0.5rem">' + 
+  Array(3).fill('<div style="height:80px;background:rgba(255,255,255,0.03);border-radius:var(--radius);border:1px solid var(--border);animation:pulse 1.5s ease infinite"></div>').join('') + 
+  '</div>';
   switch (tab) {
     case 'analytics': await renderAdminAnalytics(container); break;
     case 'products': await renderAdminProducts(container); break;
@@ -2140,6 +2203,8 @@ window.switchAdminTab = async function(tab, btn) {
     case 'orders': await renderAdminOrders(container); break;
     case 'withdrawals': await renderAdminWithdrawals(container); break;
     case 'testimonials': await renderAdminTestimonials(container); break;
+    case 'deposits': await renderAdminDeposits(container); break;
+    case 'upi': await renderAdminUPI(container); break;
   }
 };
 
@@ -2405,17 +2470,290 @@ window.saveTestimonial = async function(id) {
   switchAdminTab('testimonials', document.querySelectorAll('.admin-tab')[5]);
 };
 
+async function renderAdminDeposits(container) {
+  const { data: deposits } = await supabaseClient.from('deposits')
+    .select('*, users(full_name, email)')
+    .order('created_at', { ascending: false });
+
+  container.innerHTML = `
+    <div>
+      <div class="admin-section-header"><h2 class="card-title">Deposits (${deposits?.length || 0})</h2></div>
+      <div style="display:flex;flex-direction:column;gap:0.75rem">
+        ${(deposits || []).map(d => `
+        <div class="glass-card" style="padding:1rem">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:0.75rem">
+            <div>
+              <div style="font-weight:700;font-size:0.875rem">${d.users?.full_name || d.users?.email || 'N/A'}</div>
+              <div style="font-size:0.75rem;color:var(--text-2);margin-top:0.2rem;font-family:var(--mono)">UTR: ${d.utr}</div>
+              <div style="font-size:0.7rem;color:var(--text-3);margin-top:0.1rem">${Utils.formatDateTime(d.created_at)}</div>
+            </div>
+            <div style="text-align:right">
+              <div style="font-size:1rem;font-weight:800;font-family:var(--mono)">${Utils.formatCurrency(d.amount)}</div>
+              <div style="margin-top:0.25rem">${Utils.statusBadge(d.status)}</div>
+            </div>
+          </div>
+          ${d.status === 'pending' ? `
+          <div style="display:flex;gap:0.5rem">
+            <button class="btn btn-success btn-sm" style="flex:1" onclick="approveDeposit('${d.id}','${d.user_id}',${d.amount})">✓ Approve & Credit</button>
+            <button class="btn btn-danger btn-sm" style="flex:1" onclick="rejectDeposit('${d.id}')">✕ Reject</button>
+          </div>` : d.admin_note ? `<div style="font-size:0.72rem;color:var(--text-3);font-style:italic">Note: ${d.admin_note}</div>` : ''}
+        </div>`).join('')}
+      </div>
+    </div>
+  `;
+}
+
+window.approveDeposit = async function(depositId, userId, amount) {
+  if (!confirm(`Credit ₹${amount} to this user's wallet?`)) return;
+
+  // Credit wallet
+  const { data, error } = await supabaseClient.rpc('credit_wallet', {
+    p_user_id: userId,
+    p_amount: amount,
+    p_type: 'deposit',
+    p_description: `Wallet deposit of ${Utils.formatCurrency(amount)}`,
+    p_reference_id: depositId,
+    p_reference_type: 'deposit'
+  });
+
+  if (error || !data?.success) {
+    Toast.show('Failed to credit wallet: ' + (data?.error || error?.message), 'error');
+    return;
+  }
+
+  // Mark approved
+  await supabaseClient.from('deposits').update({
+    status: 'approved',
+    processed_at: new Date().toISOString(),
+    admin_note: 'Verified and credited'
+  }).eq('id', depositId);
+
+  Toast.show('Wallet credited successfully!', 'success');
+  switchAdminTab('deposits', document.querySelectorAll('.admin-tab')[5]);
+};
+
+window.rejectDeposit = async function(depositId) {
+  const reason = prompt('Rejection reason:') || 'Invalid UTR';
+  await supabaseClient.from('deposits').update({
+    status: 'rejected',
+    processed_at: new Date().toISOString(),
+    admin_note: reason
+  }).eq('id', depositId);
+  Toast.show('Deposit rejected', 'info');
+  switchAdminTab('deposits', document.querySelectorAll('.admin-tab')[5]);
+};
+
+async function renderAdminUPI(container) {
+  const { data: accounts } = await supabaseClient.from('upi_accounts').select('*').order('created_at', { ascending: false });
+
+  container.innerHTML = `
+    <div>
+      <div class="admin-section-header">
+        <h2 class="card-title">UPI Accounts (${accounts?.length || 0})</h2>
+        <button class="btn btn-primary" onclick="showUPIModal()">+ Add UPI</button>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:0.75rem">
+        ${(accounts || []).map(a => `
+        <div class="glass-card" style="padding:1rem;display:flex;align-items:center;gap:1rem">
+          <img src="${a.qr_url}" style="width:60px;height:60px;border-radius:8px;object-fit:contain;background:white;padding:4px;flex-shrink:0" onerror="this.style.display='none'">
+          <div style="flex:1;min-width:0">
+            <div style="font-weight:700;font-size:0.875rem">${a.name}</div>
+            <div style="font-size:0.8rem;color:var(--accent);font-family:var(--mono);margin-top:0.2rem">${a.upi_id}</div>
+          </div>
+          ${a.is_active ? '<span class="badge badge-success">Active</span>' : '<span class="badge badge-danger">Inactive</span>'}
+          <div style="display:flex;gap:0.5rem;flex-shrink:0">
+            <button class="btn btn-outline btn-sm" onclick='showUPIModal(${JSON.stringify(a).replace(/'/g,"&#39;")})'>Edit</button>
+            <button class="btn btn-danger btn-sm" onclick="toggleUPI('${a.id}',${a.is_active})">${a.is_active ? 'Disable' : 'Enable'}</button>
+          </div>
+        </div>`).join('')}
+      </div>
+    </div>
+  `;
+}
+
+
+
+
+window.showUPIModal = function(account = null) {
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay';
+  modal.id = 'upi-modal';
+  modal.innerHTML = `
+    <div class="modal glass-card">
+      <div class="modal-header">
+        <h2 class="modal-title">${account ? 'Edit' : 'Add'} UPI Account</h2>
+        <button class="modal-close" onclick="document.getElementById('upi-modal').remove()">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label class="form-label">Display Name</label>
+          <input type="text" class="form-input" id="upi-name" value="${account?.name || ''}" placeholder="e.g. CashX Payments">
+        </div>
+        <div class="form-group">
+          <label class="form-label">UPI ID</label>
+          <input type="text" class="form-input" id="upi-id-val" value="${account?.upi_id || ''}" placeholder="cashx@upi">
+        </div>
+        <div class="form-group">
+          <label class="form-label">QR Code Image</label>
+          <div id="qr-preview" style="margin-bottom:0.75rem;${account?.qr_url ? '' : 'display:none'}">
+            <img id="qr-preview-img" src="${account?.qr_url || ''}" style="width:120px;height:120px;object-fit:contain;background:white;padding:6px;border-radius:8px;border:1px solid var(--border)">
+          </div>
+          <input type="file" id="upi-qr-file" accept="image/*" style="display:none" onchange="previewQR(this)">
+          <button type="button" class="btn btn-outline w-full" onclick="document.getElementById('upi-qr-file').click()">
+            📁 ${account?.qr_url ? 'Change QR Image' : 'Upload QR Image'}
+          </button>
+          <input type="hidden" id="upi-qr-url" value="${account?.qr_url || ''}">
+          <div id="qr-upload-status" style="font-size:0.75rem;color:var(--text-2);margin-top:0.4rem;text-align:center"></div>
+        </div>
+        <button class="btn btn-primary w-full btn-lg" id="upi-save-btn" onclick="saveUPI('${account?.id || ''}')">Save</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+};
+
+window.previewQR = async function(input) {
+  const file = input.files[0];
+  if (!file) return;
+
+  const status = document.getElementById('qr-upload-status');
+  const preview = document.getElementById('qr-preview');
+  const previewImg = document.getElementById('qr-preview-img');
+
+  status.textContent = 'Uploading...';
+
+  const ext = file.name.split('.').pop();
+  const fileName = `qr_${Date.now()}.${ext}`;
+
+  const { data, error } = await supabaseClient.storage
+    .from('qr-codes')
+    .upload(fileName, file, { upsert: true });
+
+  if (error) {
+    status.textContent = 'Upload failed: ' + error.message;
+    status.style.color = 'var(--danger)';
+    return;
+  }
+
+  const { data: urlData } = supabaseClient.storage.from('qr-codes').getPublicUrl(fileName);
+  const publicUrl = urlData.publicUrl;
+
+  document.getElementById('upi-qr-url').value = publicUrl;
+  previewImg.src = publicUrl;
+  preview.style.display = 'block';
+  status.textContent = '✓ Uploaded successfully';
+  status.style.color = 'var(--success)';
+};
+
+window.saveUPI = async function(id) {
+  const name = document.getElementById('upi-name').value.trim();
+  const upiId = document.getElementById('upi-id-val').value.trim();
+  const qrUrl = document.getElementById('upi-qr-url').value.trim();
+
+  if (!name || !upiId) { Toast.show('Name and UPI ID required', 'warning'); return; }
+  if (!qrUrl) { Toast.show('Please upload a QR image', 'warning'); return; }
+
+  const btn = document.getElementById('upi-save-btn');
+  btn.disabled = true; btn.textContent = 'Saving...';
+
+  if (id) {
+    await supabaseClient.from('upi_accounts').update({ name, upi_id: upiId, qr_url: qrUrl }).eq('id', id);
+  } else {
+    await supabaseClient.from('upi_accounts').insert({ name, upi_id: upiId, qr_url: qrUrl });
+  }
+
+  document.getElementById('upi-modal').remove();
+  Toast.show('UPI account saved!', 'success');
+  switchAdminTab('upi', document.querySelectorAll('.admin-tab')[6]);
+};
+
+window.toggleUPI = async function(id, currentState) {
+  await supabaseClient.from('upi_accounts').update({ is_active: !currentState }).eq('id', id);
+  Toast.show(`UPI account ${currentState ? 'disabled' : 'enabled'}`, 'info');
+  switchAdminTab('upi', document.querySelectorAll('.admin-tab')[6]);
+};
+
+window.handleReferralBonus = async function(orderId, amount) {
+  try {
+    // Check if this user was referred and bonus not yet paid
+    const { data: referral } = await supabaseClient
+      .from('referrals')
+      .select('*')
+      .eq('referred_id', Auth.currentUser.id)
+      .eq('bonus_paid', false)
+      .single();
+
+    if (!referral) return;
+
+    // Pay ₹150 bonus to referrer
+    await supabaseClient.rpc('credit_wallet', {
+      p_user_id: referral.referrer_id,
+      p_amount: 150,
+      p_type: 'bonus',
+      p_description: 'Referral bonus — your friend made their first purchase!',
+      p_reference_id: orderId,
+      p_reference_type: 'referral'
+    });
+
+    // Mark bonus paid and link order
+    await supabaseClient.from('referrals').update({
+      bonus_paid: true,
+      order_id: orderId
+    }).eq('id', referral.id);
+
+  } catch(e) {}
+};
+
+window.shareReferral = function(code) {
+  const link = `${window.location.origin}${window.location.pathname}#login?ref=${code}`;
+  if (navigator.share) {
+    navigator.share({
+      title: 'Join CashX — Earn Daily Cashback',
+      text: `Join CashX and earn 5% daily cashback on your investment! Use my referral code ${code} to get started.`,
+      url: link
+    });
+  } else {
+    navigator.clipboard.writeText(link).then(() => Toast.show('Referral link copied!', 'success'));
+  }
+};
+
 // ============================================================
 // INIT
 // ============================================================
 window.addEventListener('hashchange', () => Router.handleRoute());
 window.addEventListener('load', async () => {
+  // Show global spinner while auth loads
+  document.getElementById('app').innerHTML = `
+    <div style="min-height:100vh;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:1rem">
+      <div style="width:48px;height:48px;background:linear-gradient(135deg,#6366f1,#22d3ee);border-radius:12px;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:1.4rem;color:white">₹</div>
+      <div class="spinner"></div>
+    </div>
+  `;
   await Auth.init();
-  Router.handleRoute();
+  await Router.handleRoute();
 });
-window.showDepositModal = function() {
+// ============================================================
+// DEPOSIT FLOW (UPI + UTR)
+// ============================================================
+window.showDepositModal = async function() {
   const existing = document.getElementById('deposit-modal');
   if (existing) existing.remove();
+
+  // Load active UPI accounts
+  let upiAccounts = [];
+  try {
+    const { data } = await supabaseClient.from('upi_accounts').select('*').eq('is_active', true);
+    upiAccounts = data || [];
+  } catch(e) {}
+
+  if (!upiAccounts.length) {
+    Toast.show('No UPI accounts configured. Contact admin.', 'error');
+    return;
+  }
+
+  // Pick a random one to distribute load
+  const selected = upiAccounts[Math.floor(Math.random() * upiAccounts.length)];
 
   const modal = document.createElement('div');
   modal.className = 'modal-overlay';
@@ -2427,48 +2765,34 @@ window.showDepositModal = function() {
         <button class="modal-close" onclick="document.getElementById('deposit-modal').remove()">✕</button>
       </div>
       <div class="modal-body">
-        <div style="text-align:center;padding:1rem;background:rgba(99,102,241,0.08);border:1px solid rgba(99,102,241,0.2);border-radius:var(--radius-sm);margin-bottom:1.5rem">
-          <div style="font-size:0.8rem;color:var(--text-2);margin-bottom:0.25rem">Current Balance</div>
-          <div style="font-size:1.8rem;font-weight:800;font-family:var(--mono);color:var(--success)">${Utils.formatCurrency(Auth.currentProfile?.wallet_balance)}</div>
+
+        <div style="text-align:center;margin-bottom:1.25rem">
+          <div style="font-size:0.75rem;color:var(--text-2);margin-bottom:0.5rem;font-weight:600;text-transform:uppercase;letter-spacing:0.05em">Scan & Pay</div>
+          <img src="${selected.qr_url}" alt="UPI QR" style="width:180px;height:180px;border-radius:var(--radius-sm);border:2px solid var(--border);margin:0 auto;display:block;object-fit:contain;background:white;padding:8px">
+          <div style="margin-top:0.75rem;font-size:0.875rem;font-weight:700;color:var(--text)">${selected.name}</div>
+          <div style="font-size:0.8rem;color:var(--accent);font-family:var(--mono);margin-top:0.2rem">${selected.upi_id}</div>
+          <button onclick="navigator.clipboard.writeText('${selected.upi_id}').then(()=>Toast.show('UPI ID copied!','success'))" style="margin-top:0.5rem;font-size:0.72rem;color:var(--text-2);background:rgba(255,255,255,0.05);border:1px solid var(--border);border-radius:4px;padding:0.25rem 0.6rem;cursor:pointer">Copy UPI ID</button>
         </div>
 
-        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:0.5rem;margin-bottom:1.25rem">
-          ${[499,999,1999,4999,9999,19999].map(amt => `
-            <button onclick="setDepositAmount(${amt})" class="deposit-quick-btn" style="padding:0.6rem;background:rgba(255,255,255,0.04);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-2);font-size:0.8rem;font-weight:600;cursor:pointer;transition:all 0.2s" onmouseover="this.style.borderColor='var(--primary)';this.style.color='var(--primary-light)'" onmouseout="this.style.borderColor='var(--border)';this.style.color='var(--text-2)'">
-              ₹${amt.toLocaleString('en-IN')}
-            </button>
-          `).join('')}
+        <div style="background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.2);border-radius:var(--radius-sm);padding:0.75rem;font-size:0.75rem;color:var(--text-2);margin-bottom:1.25rem;line-height:1.6">
+          ⚠️ After paying, enter the exact amount and UTR number from your UPI app. Your wallet will be credited after admin verification.
         </div>
 
         <div class="form-group">
-          <label class="form-label">Enter Amount (₹)</label>
-          <input type="number" class="form-input" id="deposit-amount" placeholder="Min ₹100" min="100" oninput="updateDepositSummary()">
+          <label class="form-label">Amount Paid (₹)</label>
+          <input type="number" class="form-input" id="deposit-amount" placeholder="Min ₹100" min="100">
         </div>
 
-        <div id="deposit-summary" style="display:none;padding:1rem;background:rgba(34,197,94,0.08);border:1px solid rgba(34,197,94,0.2);border-radius:var(--radius-sm);margin-bottom:1.25rem">
-          <div style="display:flex;justify-content:space-between;font-size:0.875rem;margin-bottom:0.4rem">
-            <span style="color:var(--text-2)">Deposit Amount</span>
-            <span id="dep-amount-display" style="font-weight:600;font-family:var(--mono)">₹0</span>
-          </div>
-          <div style="display:flex;justify-content:space-between;font-size:0.875rem;margin-bottom:0.4rem">
-            <span style="color:var(--text-2)">Processing Fee</span>
-            <span style="color:var(--success);font-weight:600">FREE</span>
-          </div>
-          <div style="height:1px;background:var(--border);margin:0.5rem 0"></div>
-          <div style="display:flex;justify-content:space-between;font-size:1rem;font-weight:700">
-            <span>You Get</span>
-            <span id="dep-total-display" style="color:var(--success);font-family:var(--mono)">₹0</span>
-          </div>
+        <div class="form-group">
+          <label class="form-label">UTR / Transaction Reference Number</label>
+          <input type="text" class="form-input" id="deposit-utr" placeholder="12-digit UTR number" maxlength="30" style="font-family:var(--mono);letter-spacing:0.05em">
+          <div style="font-size:0.7rem;color:var(--text-3);margin-top:0.3rem">Find this in your UPI app under transaction details</div>
         </div>
 
-        <div style="padding:0.75rem;background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.2);border-radius:var(--radius-sm);margin-bottom:1.25rem;font-size:0.75rem;color:var(--text-2)">
-          ⚡ Money will be credited to your wallet instantly after payment
-        </div>
-
-        <button class="btn btn-primary w-full btn-lg" id="deposit-pay-btn" onclick="processDeposit()" disabled style="opacity:0.6">
-          Proceed to Pay →
+        <button class="btn btn-primary w-full btn-lg" id="deposit-submit-btn" onclick="submitDeposit('${selected.id}')">
+          Submit for Verification →
         </button>
-        <p style="text-align:center;font-size:0.72rem;color:var(--text-3);margin-top:0.75rem">🔒 Secured by Razorpay · 100% Safe</p>
+        <p style="text-align:center;font-size:0.72rem;color:var(--text-3);margin-top:0.75rem">Deposits verified within 30 minutes during business hours</p>
       </div>
     </div>
   `;
@@ -2476,66 +2800,40 @@ window.showDepositModal = function() {
   modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
 };
 
-window.setDepositAmount = function(amount) {
-  document.getElementById('deposit-amount').value = amount;
-  updateDepositSummary();
-};
-
-window.updateDepositSummary = function() {
+window.submitDeposit = async function(upiAccountId) {
   const amount = parseFloat(document.getElementById('deposit-amount').value);
-  const summary = document.getElementById('deposit-summary');
-  const btn = document.getElementById('deposit-pay-btn');
-  if (!amount || amount < 100) {
-    summary.style.display = 'none';
-    btn.disabled = true; btn.style.opacity = '0.6';
+  const utr = document.getElementById('deposit-utr').value.trim();
+
+  if (!amount || amount < 100) { Toast.show('Minimum deposit is ₹100', 'warning'); return; }
+  if (!utr || utr.length < 6) { Toast.show('Enter a valid UTR number', 'warning'); return; }
+
+  const btn = document.getElementById('deposit-submit-btn');
+  btn.disabled = true; btn.textContent = 'Submitting...';
+
+  // Check duplicate UTR
+  const { data: existing } = await supabaseClient.from('deposits').select('id').eq('utr', utr).single();
+  if (existing) {
+    Toast.show('This UTR has already been submitted.', 'error');
+    btn.disabled = false; btn.textContent = 'Submit for Verification →';
     return;
   }
-  summary.style.display = 'block';
-  btn.disabled = false; btn.style.opacity = '1';
-  document.getElementById('dep-amount-display').textContent = Utils.formatCurrency(amount);
-  document.getElementById('dep-total-display').textContent = Utils.formatCurrency(amount);
-};
 
-window.processDeposit = async function() {
-  const amount = parseFloat(document.getElementById('deposit-amount').value);
-  if (!amount || amount < 100) { Toast.show('Minimum deposit is ₹100', 'warning'); return; }
+  const { error } = await supabaseClient.from('deposits').insert({
+    user_id: Auth.currentUser.id,
+    upi_account_id: upiAccountId,
+    amount,
+    utr,
+    status: 'pending'
+  });
 
-  const btn = document.getElementById('deposit-pay-btn');
-  btn.disabled = true; btn.textContent = 'Processing...';
-
-  // Razorpay integration placeholder
-  if (typeof Razorpay !== 'undefined' && APP_CONFIG.razorpayKeyId) {
-    const options = {
-      key: APP_CONFIG.razorpayKeyId,
-      amount: amount * 100,
-      currency: 'INR',
-      name: 'CashX',
-      description: 'Wallet Deposit',
-      handler: async function(response) {
-        // Credit wallet after successful payment
-        const result = await DB.creditWallet(amount, 'deposit', `Wallet deposit of ${Utils.formatCurrency(amount)}`, response.razorpay_payment_id, 'razorpay');
-        if (result.error) { Toast.show('Payment done but wallet credit failed. Contact support.', 'error'); return; }
-        await Auth.loadProfile();
-        Cache.clear();
-        document.getElementById('deposit-modal')?.remove();
-        Toast.show(`₹${amount.toLocaleString('en-IN')} deposited successfully! 🎉`, 'success');
-        renderWallet();
-      },
-      prefill: { email: Auth.currentUser?.email, contact: Auth.currentProfile?.phone },
-      theme: { color: '#6366f1' }
-    };
-    new Razorpay(options).open();
-    btn.disabled = false; btn.textContent = 'Proceed to Pay →';
-  } else {
-    // Demo mode — credit directly
-    const result = await DB.creditWallet(amount, 'deposit', `Wallet deposit of ${Utils.formatCurrency(amount)}`);
-    if (result.error) { Toast.show('Deposit failed: ' + result.error.message, 'error'); btn.disabled = false; btn.textContent = 'Proceed to Pay →'; return; }
-    await Auth.loadProfile();
-    Cache.clear();
-    document.getElementById('deposit-modal')?.remove();
-    Toast.show(`₹${amount.toLocaleString('en-IN')} deposited! (Demo Mode) 🎉`, 'success');
-    renderWallet();
+  if (error) {
+    Toast.show('Submission failed: ' + error.message, 'error');
+    btn.disabled = false; btn.textContent = 'Submit for Verification →';
+    return;
   }
+
+  document.getElementById('deposit-modal').remove();
+  Toast.show('Deposit submitted! Wallet will be credited after verification 🎉', 'success');
 };
 </script>
 </body>

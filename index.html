@@ -1456,7 +1456,7 @@ dashBody.innerHTML = `
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem">
         <div>
           <div style="font-size:0.7rem;font-weight:700;color:var(--text-2);text-transform:uppercase;letter-spacing:0.05em">🎁 Refer & Earn</div>
-          <div style="font-size:0.8rem;color:var(--text-2);margin-top:0.2rem">₹150 bonus + 1% daily cashback for 30 days</div>
+          <div style="font-size:0.8rem;color:var(--text-2);margin-top:0.2rem">Earn ₹50–₹600 bonus based on your friend's plan</div>
         </div>
         <div style="animation:shimmer 2s ease-in-out infinite;font-size:1.5rem">✨</div>
       </div>
@@ -2165,7 +2165,7 @@ window.renderProfile = async function() {
     <button onclick="navigator.clipboard.writeText('${profile?.referral_code || ''}').then(()=>Toast.show('Referral code copied!','success'))" class="btn btn-outline" style="flex-shrink:0">Copy</button>
   </div>
   <div style="font-size:0.72rem;margin-top:0.5rem;padding:0.5rem 0.75rem;border-radius:6px;background:linear-gradient(135deg,rgba(99,102,241,0.15),rgba(34,211,238,0.1));border:1px solid rgba(99,102,241,0.3);animation:shimmer 2s ease-in-out infinite;background-size:200% auto">
-  ✨ Share this code. Earn <strong style="color:#818cf8">₹150 bonus</strong> when your friend makes their first purchase. <strong style="color:#22d3ee"> Refer Now <i class="fa-solid fa-share"></i></strong>
+  ✨ Share this code. Earn <strong style="color:#818cf8">₹50–₹600 bonus</strong> based on your friend's plan (₹600→₹50, ₹1500→₹170, ₹5000→₹250, ₹7500→₹350, ₹12000→₹600). <strong style="color:#22d3ee"> Refer Now <i class="fa-solid fa-share"></i></strong>
 </div>
 </div>
               <button class="btn btn-primary btn-lg" id="save-profile-btn" onclick="saveProfile()">Save Changes</button>
@@ -2458,9 +2458,23 @@ async function renderAdminWithdrawals(container) {
 }
 
 window.approveWithdrawal = async function(id) {
-  const { error } = await DB.updateWithdrawal(id, 'approved', 'Approved by admin');
+  // Get withdrawal details first
+  const { data: w } = await supabaseClient
+    .from('withdrawals')
+    .select('*, users(full_name)')
+    .eq('id', id)
+    .single();
+
+  // Show UPI details to admin prominently
+  const confirmed = confirm(
+    `Send ₹${w.amount} to UPI: ${w.upi_id}\nUser: ${w.users?.full_name}\n\nHave you sent the money?`
+  );
+  
+  if (!confirmed) return;
+
+  const { error } = await DB.updateWithdrawal(id, 'processed', 'Payment sent via UPI');
   if (error) { Toast.show('Failed', 'error'); return; }
-  Toast.show('Withdrawal approved', 'success');
+  Toast.show('Withdrawal marked as processed', 'success');
   switchAdminTab('withdrawals', document.querySelectorAll('.admin-tab')[4]);
 };
 window.rejectWithdrawal = async function(id) {
@@ -2740,12 +2754,24 @@ window.handleReferralBonus = async function(orderId, amount) {
 
     if (!referral) return;
 
-    // Pay ₹150 bonus to referrer
-    await supabaseClient.rpc('credit_wallet', {
-      p_user_id: referral.referrer_id,
-      p_amount: 150,
-      p_type: 'bonus',
-      p_description: 'Referral bonus — your friend made their first purchase!',
+    // Calculate bonus based on plan price
+const getReferralBonus = (price) => {
+  if (price >= 12000) return 600;
+  if (price >= 7500) return 350;
+  if (price >= 5000) return 250;
+  if (price >= 1500) return 170;
+  if (price >= 600) return 50;
+  return 0;
+};
+const bonus = getReferralBonus(amount);
+if (bonus <= 0) return;
+
+// Pay bonus to referrer
+await supabaseClient.rpc('credit_wallet', {
+  p_user_id: referral.referrer_id,
+  p_amount: bonus,
+  p_type: 'bonus',
+  p_description: `Referral bonus ₹${bonus} — your friend purchased a ₹${amount} plan!`,
       p_reference_id: orderId,
       p_reference_type: 'referral'
     });

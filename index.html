@@ -301,19 +301,19 @@ img { display: block; }
 .sidebar-link.active { color: white; background: linear-gradient(135deg, var(--primary), var(--primary-dark)); }
 .sl-icon { font-size: 1.05rem; flex-shrink: 0; }
 .sidebar-footer { padding: 1rem; border-top: 1px solid var(--border); }
-.main-content { flex: 1; margin-left: 0; min-height: 100vh; display: flex; flex-direction: column; }
-@media (min-width: 1024px) { .main-content { margin-left: 260px; } }
-.topbar { position: sticky; top: 0; z-index: 50; background: rgba(5,11,24,0.9); border-bottom: 1px solid var(--border); backdrop-filter: blur(20px); height: var(--topbar-h); display: flex; align-items: center; gap: 1rem; padding: 0 1.5rem; }
+.main-content { flex: 1; margin-left: 0; min-height: 100vh; display: flex; flex-direction: column; overflow-x: hidden; max-width: 100vw; }@media (min-width: 1024px) { .main-content { margin-left: 260px; } }
+.topbar { position: sticky; top: 0; z-index: 50; background: rgba(5,11,24,0.9); border-bottom: 1px solid var(--border); backdrop-filter: blur(20px); height: var(--topbar-h); display: flex; align-items: center; gap: 1rem; padding: 0 1rem; overflow: hidden; }
 .topbar-menu-btn { display: flex; align-items: center; justify-content: center; width: 44px; height: 44px; font-size: 1.2rem; color: var(--text); cursor: pointer; border-radius: 8px; }
 @media (min-width: 1024px) { .topbar-menu-btn { display: none; } }
-.topbar-search { flex: 1; max-width: 400px; min-width: 0; }
+.topbar-search { flex: 1; min-width: 0; max-width: 200px; }
 .topbar-search-input { background: var(--surface); border: 1px solid var(--border); border-radius: 100px; padding: 0.5rem 0.75rem; color: var(--text); width: 100%; font-size: 0.85rem; outline: none; min-width: 0; }
-.topbar-right { display: flex; align-items: center; gap: 1.25rem; margin-left: auto; }
-.topbar-balance { display: flex; flex-direction: column; align-items: flex-end; }
+.topbar-right { display: flex; align-items: center; gap: 0.75rem; flex-shrink: 0; }
+.topbar-balance { display: none; }
+@media (min-width: 400px) { .topbar-balance { display: flex; flex-direction: column; align-items: flex-end; } }
 .topbar-balance-label { font-size: 0.65rem; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.05em; }
 .topbar-balance-val { font-size: 0.875rem; font-weight: 700; color: var(--success); font-family: var(--mono); }
 .topbar-avatar { width: 36px; height: 36px; background: linear-gradient(135deg, var(--primary), var(--accent)); border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 0.8rem; cursor: pointer; }
-.page-content { padding: 1rem 0.875rem calc(80px + env(safe-area-inset-bottom)); flex: 1; }
+.page-content { padding: 1rem 0.75rem calc(80px + env(safe-area-inset-bottom)); flex: 1; overflow-x: hidden; box-sizing: border-box; width: 100%; }
 
 @media (min-width: 1024px) {
   .page-content { padding: 2rem 1.5rem 3rem; }
@@ -431,13 +431,13 @@ img { display: block; }
 /* ============================================================
    WALLET PAGE
    ============================================================ */
-.wallet-hero-card { padding: 1.25rem; margin-bottom: 1.25rem; background: linear-gradient(135deg, rgba(99,102,241,0.1), rgba(34,211,238,0.05)); border: 1px solid rgba(99,102,241,0.2); overflow: hidden; }
+.wallet-hero-card { padding: 1rem; margin-bottom: 1.25rem; background: linear-gradient(135deg, rgba(99,102,241,0.1), rgba(34,211,238,0.05)); border: 1px solid rgba(99,102,241,0.2); overflow: hidden; box-sizing: border-box; width: 100%; max-width: 100%; }
 .wallet-balance-section { text-align: center; margin-bottom: 1.5rem; }
 .wallet-label { font-size: 0.75rem; color: var(--text-2); text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 0.5rem; }
-.wallet-amount { font-size: clamp(1.8rem, 8vw, 3rem); font-weight: 800; letter-spacing: -0.03em; font-family: var(--mono); word-break: break-all; }
+.wallet-amount { font-size: clamp(1.5rem, 7vw, 3rem); font-weight: 800; letter-spacing: -0.03em; font-family: var(--mono); word-break: break-all; }
 .wallet-sub { font-size: 0.75rem; color: var(--text-3); margin-top: 0.25rem; }
-.wallet-actions { display: flex; gap: 0.5rem; justify-content: center; margin-bottom: 1.5rem; flex-wrap: wrap; }
-.wallet-action-btn { display: flex; align-items: center; gap: 0.4rem; padding: 0.6rem 0.875rem; background: rgba(255,255,255,0.05); border: 1px solid var(--border); border-radius: var(--radius-sm); font-weight: 600; font-size: 0.8rem; color: var(--text); cursor: pointer; transition: all 0.2s; flex: 1; justify-content: center; min-width: 80px; }
+.wallet-actions { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.5rem; margin-bottom: 1.5rem; }
+.wallet-action-btn { display: flex; align-items: center; justify-content: center; gap: 0.4rem; padding: 0.6rem 0.5rem; background: rgba(255,255,255,0.05); border: 1px solid var(--border); border-radius: var(--radius-sm); font-weight: 600; font-size: 0.75rem; color: var(--text); cursor: pointer; transition: all 0.2s; min-width: 0; width: 100%; }
 .wallet-action-btn:hover { border-color: var(--primary); color: var(--primary-light); }
 .wallet-stats { display: flex; justify-content: center; gap: 1rem; flex-wrap: wrap; }
 .wallet-stat { text-align: center; }
@@ -992,7 +992,7 @@ window.renderSidebar = function(active) {
   return `
     <aside class="sidebar" id="sidebar">
       <div class="sidebar-brand">
-        <div class="brand-logo">₹</div>
+        <img src="favicon.png" alt="CashX" class="brand-logo" style="object-fit: contain;">
         <span class="brand-name">Cash<span class="accent">X</span></span>
       </div>
       <div class="sidebar-user">
@@ -1084,7 +1084,7 @@ window.renderLanding = async function() {
     <div class="landing-page">
       <nav class="landing-nav glass-nav">
         <div class="nav-brand">
-          <div class="brand-logo">₹</div>
+          <img src="favicon.png" alt="CashX" class="brand-logo" style="object-fit: contain;">
           <span class="brand-name">Cash<span class="accent">X</span></span>
         </div>
         <div class="nav-links">
@@ -1264,7 +1264,7 @@ window.renderLogin = async function() {
       <div class="auth-bg"><div class="orb orb-1"></div><div class="orb orb-2"></div></div>
       <div class="auth-container">
         <div class="auth-brand">
-          <div class="brand-logo">₹</div>
+          <img src="favicon.png" alt="CashX" class="brand-logo" style="object-fit: contain;">
           <span class="brand-name">Cash<span class="accent">X</span></span>
         </div>
         <div class="auth-card glass-card animate-in">
@@ -2780,7 +2780,7 @@ window.showDepositModal = async function() {
 
         <div class="form-group">
           <label class="form-label">Amount Paid (₹)</label>
-          <input type="number" class="form-input" id="deposit-amount" placeholder="Min ₹100" min="100">
+          <input type="number" class="form-input" id="deposit-amount" placeholder="Min ₹600" min="600">
         </div>
 
         <div class="form-group">
@@ -2804,7 +2804,7 @@ window.submitDeposit = async function(upiAccountId) {
   const amount = parseFloat(document.getElementById('deposit-amount').value);
   const utr = document.getElementById('deposit-utr').value.trim();
 
-  if (!amount || amount < 100) { Toast.show('Minimum deposit is ₹100', 'warning'); return; }
+  if (!amount || amount < 600) { Toast.show('Minimum deposit is ₹600', 'warning'); return; }
   if (!utr || utr.length < 6) { Toast.show('Enter a valid UTR number', 'warning'); return; }
 
   const btn = document.getElementById('deposit-submit-btn');

@@ -2127,6 +2127,8 @@ window.renderWithdrawals = async function() {
 };
 window.showWithdrawalModal = function(balance, savedUpi) {
   if (balance < 150) { Toast.show('Minimum withdrawal is ₹150', 'warning'); return; }
+  const fee = Math.round(balance * 0.10);
+  const youGet = balance - fee;
   const modal = document.createElement('div');
   modal.className = 'modal-overlay';
   modal.id = 'withdrawal-modal';
@@ -2134,9 +2136,26 @@ window.showWithdrawalModal = function(balance, savedUpi) {
     <div class="modal glass-card">
       <div class="modal-header"><h2 class="modal-title">Request Withdrawal</h2><button class="modal-close" onclick="document.getElementById('withdrawal-modal').remove()">✕</button></div>
       <div class="modal-body">
-        <div class="form-group"><label class="form-label">Amount (Min ₹150, Max ${Utils.formatCurrency(balance)})</label><input type="number" class="form-input" id="wd-amount" placeholder="Enter amount" min="150" max="${balance}" step="1"></div>
+        <div class="form-group"><label class="form-label">Amount to Withdraw (Min ₹150, Max ${Utils.formatCurrency(balance)})</label>
+          <input type="number" class="form-input" id="wd-amount" placeholder="Enter amount" min="150" max="${balance}" step="1" oninput="updateWithdrawalPreview(this.value, ${balance})">
+        </div>
+        <div id="wd-preview" class="glass-card-inner" style="margin-bottom:1rem;display:none">
+          <div style="display:flex;justify-content:space-between;font-size:0.85rem;margin-bottom:0.5rem">
+            <span style="color:var(--text-2)">Withdrawal Amount</span>
+            <span id="wd-gross">₹0</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;font-size:0.85rem;margin-bottom:0.5rem">
+            <span style="color:var(--text-2)">Convenience Fee (10%)</span>
+            <span id="wd-fee" style="color:var(--danger)">-₹0</span>
+          </div>
+          <div style="height:1px;background:var(--border);margin:0.5rem 0"></div>
+          <div style="display:flex;justify-content:space-between;font-size:1rem;font-weight:700">
+            <span>You Receive</span>
+            <span id="wd-net" style="color:var(--success)">₹0</span>
+          </div>
+        </div>
         <div class="form-group"><label class="form-label">UPI ID</label><input type="text" class="form-input" id="wd-upi" placeholder="yourname@upi" value="${savedUpi}"></div>
-        <div class="wd-note glass-card-inner">⚡ Withdrawals processed within 2-4 hours via RazorpayX</div>
+        <div class="wd-note glass-card-inner">⚡ Withdrawals processed within 2-4 hours • 10% convenience fee applies</div>
         <button class="btn btn-primary w-full btn-lg" onclick="submitWithdrawal()">Confirm Withdrawal</button>
       </div>
     </div>
@@ -2148,14 +2167,30 @@ window.showWithdrawalModal = function(balance, savedUpi) {
 window.submitWithdrawal = async function() {
   const amount = parseFloat(document.getElementById('wd-amount').value);
   const upi = document.getElementById('wd-upi').value.trim();
+
   if (!amount || amount < 150) { Toast.show('Minimum withdrawal is ₹150', 'warning'); return; }
   if (!upi) { Toast.show('Enter your UPI ID', 'warning'); return; }
   if (amount > (Auth.currentProfile?.wallet_balance || 0)) { Toast.show('Insufficient balance', 'error'); return; }
-  const { error } = await DB.requestWithdrawal(amount, upi);
-  if (error) { Toast.show(error.message || 'Withdrawal failed', 'error'); return; }
+
+  const btn = document.querySelector('#withdrawal-modal .btn-primary');
+  btn.disabled = true; btn.textContent = 'Processing...';
+
+  // Fee calculated on SERVER — user cannot manipulate
+  const { data, error } = await supabaseClient.rpc('request_withdrawal', {
+    p_user_id: Auth.currentUser.id,
+    p_amount: amount,
+    p_upi_id: upi
+  });
+
+  if (error || !data?.success) {
+    Toast.show(data?.error || error?.message || 'Withdrawal failed', 'error');
+    btn.disabled = false; btn.textContent = 'Confirm Withdrawal';
+    return;
+  }
+
   await DB.updateProfile({ upi_id: upi });
   document.getElementById('withdrawal-modal')?.remove();
-  Toast.show('Withdrawal request submitted! Processing in 2-4 hours 🎉', 'success');
+  Toast.show(`Withdrawal of ₹${data.net_amount} submitted! (₹${data.fee} fee deducted) 🎉`, 'success');
   await Auth.loadProfile();
   renderWithdrawals();
 };
@@ -2776,44 +2811,11 @@ window.toggleUPI = async function(id, currentState) {
 
 window.handleReferralBonus = async function(orderId, amount) {
   try {
-    // Check if this user was referred and bonus not yet paid
-    const { data: referral } = await supabaseClient
-      .from('referrals')
-      .select('*')
-      .eq('referred_id', Auth.currentUser.id)
-      .eq('bonus_paid', false)
-      .single();
-
-    if (!referral) return;
-
-    // Calculate bonus based on plan price
-const getReferralBonus = (price) => {
-  if (price >= 12000) return 600;
-  if (price >= 7500) return 350;
-  if (price >= 5000) return 250;
-  if (price >= 1500) return 170;
-  if (price >= 600) return 50;
-  return 0;
-};
-const bonus = getReferralBonus(amount);
-if (bonus <= 0) return;
-
-// Pay bonus to referrer
-await supabaseClient.rpc('credit_wallet', {
-  p_user_id: referral.referrer_id,
-  p_amount: bonus,
-  p_type: 'bonus',
-  p_description: `Referral bonus ₹${bonus} — your friend purchased a ₹${amount} plan!`,
-      p_reference_id: orderId,
-      p_reference_type: 'referral'
+    const { data, error } = await supabaseClient.rpc('handle_referral_bonus', {
+      p_order_id: orderId,
+      p_user_id: Auth.currentUser.id
     });
-
-    // Mark bonus paid and link order
-    await supabaseClient.from('referrals').update({
-      bonus_paid: true,
-      order_id: orderId
-    }).eq('id', referral.id);
-
+    console.log('Referral bonus result:', data);
   } catch(e) {}
 };
 
@@ -2927,24 +2929,15 @@ window.submitDeposit = async function(upiAccountId) {
   const btn = document.getElementById('deposit-submit-btn');
   btn.disabled = true; btn.textContent = 'Submitting...';
 
-  // Check duplicate UTR
-  const { data: existing } = await supabaseClient.from('deposits').select('id').eq('utr', utr).single();
-  if (existing) {
-    Toast.show('This UTR has already been submitted.', 'error');
-    btn.disabled = false; btn.textContent = 'Submit for Verification →';
-    return;
-  }
-
-  const { error } = await supabaseClient.from('deposits').insert({
-    user_id: Auth.currentUser.id,
-    upi_account_id: upiAccountId,
-    amount,
-    utr,
-    status: 'pending'
+  const { data, error } = await supabaseClient.rpc('submit_deposit', {
+    p_user_id: Auth.currentUser.id,
+    p_upi_account_id: upiAccountId,
+    p_amount: amount,
+    p_utr: utr
   });
 
-  if (error) {
-    Toast.show('Submission failed: ' + error.message, 'error');
+  if (error || !data?.success) {
+    Toast.show(data?.error || error?.message || 'Submission failed', 'error');
     btn.disabled = false; btn.textContent = 'Submit for Verification →';
     return;
   }
@@ -2952,6 +2945,7 @@ window.submitDeposit = async function(upiAccountId) {
   document.getElementById('deposit-modal').remove();
   Toast.show('Deposit submitted! Wallet will be credited after verification 🎉', 'success');
 };
+
 window.showForgotPassword = function() {
   const modal = document.createElement('div');
   modal.className = 'modal-overlay';
@@ -3114,7 +3108,17 @@ window.handleSignOut = async function() {
     window.location.reload();
   }
 };
-
+window.updateWithdrawalPreview = function(amount, balance) {
+  const amt = parseFloat(amount) || 0;
+  const preview = document.getElementById('wd-preview');
+  if (amt < 1) { preview.style.display = 'none'; return; }
+  const fee = Math.round(amt * 0.10);
+  const net = amt - fee;
+  preview.style.display = 'block';
+  document.getElementById('wd-gross').textContent = Utils.formatCurrency(amt);
+  document.getElementById('wd-fee').textContent = '-' + Utils.formatCurrency(fee);
+  document.getElementById('wd-net').textContent = Utils.formatCurrency(net);
+};
 </script>
 </body>
 </html>

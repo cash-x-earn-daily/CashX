@@ -652,6 +652,3009 @@ const APP_CONFIG = {
 
 let supabaseClient;
 try {
+  supabaseClient = window.supabase.createClient(SUPABASE_CONFIG.url, SUPABASE_CONFIG.anonKey, {
+    auth: {
+      autoRefreshToken: true,
+      persistSession: true,
+      detectSessionInUrl: true
+    }
+  });
+
+  setInterval(async () => {
+    const { data: { session } } = await supabaseClient.auth.getSession();
+    if (session) await supabaseClient.auth.refreshSession();
+  }, 4 * 60 * 1000);
+
+} catch (e) {
+  console.error('Supabase init failed:', e);
+  // Demo mode shim for UI testing
+  supabaseClient = {
+    auth: {
+      getSession: async () => ({ data: { session: null } }),
+      onAuthStateChange: (cb) => { return { data: { subscription: { unsubscribe: () => {} } } }; },
+      signUp: async () => ({ data: null, error: { message: 'Please configure Supabase credentials in SUPABASE_CONFIG.' } }),
+      signInWithPassword: async () => ({ data: null, error: { message: 'Please configure Supabase credentials in SUPABASE_CONFIG.' } }),
+      signInWithOtp: async () => ({ data: null, error: { message: 'Please configure Supabase credentials.' } }),
+      verifyOtp: async () => ({ data: null, error: { message: 'Please configure Supabase credentials.' } }),
+      signOut: async () => ({}),
+    },
+    from: (table) => ({
+      select: (...args) => ({ eq: () => ({ single: async () => ({ data: null, error: null }), order: () => ({ data: [], error: null }) }), order: () => ({ data: [], error: null }), limit: () => ({ data: [], error: null }), eq: () => ({ data: [], error: null }) }),
+      insert: () => ({ select: () => ({ single: async () => ({ data: { id: 'demo-' + Date.now() }, error: null }) }), data: null, error: null }),
+      update: () => ({ eq: () => ({ select: () => ({ single: async () => ({ data: null, error: null }) }), data: null, error: null }) }),
+      delete: () => ({ eq: () => ({ data: null, error: null }) }),
+      upsert: () => ({ data: null, error: null }),
+    }),
+    rpc: async () => ({ data: { success: false, error: 'Demo mode' }, error: null }),
+  };
+}
+
+function openSidebar() {
+  document.getElementById('sidebar')?.classList.add('open');
+  document.getElementById('sidebar-backdrop')?.classList.add('show');
+  document.body.style.overflow = 'hidden';
+}
+function closeSidebar() {
+  document.getElementById('sidebar')?.classList.remove('open');
+  document.getElementById('sidebar-backdrop')?.classList.remove('show');
+  document.body.style.overflow = '';
+}
+
+// ============================================================
+// AUTH MODULE
+// ============================================================
+const Auth = {
+  currentUser: null,
+  currentProfile: null,
+
+  async init() {
+    const { data: { session } } = await supabaseClient.auth.getSession();
+    if (session) {
+      this.currentUser = session.user;
+      await this.loadProfile();
+    }
+    supabaseClient.auth.onAuthStateChange(async (event, session) => {
+      if (session) {
+        this.currentUser = session.user;
+        await this.loadProfile();
+      } else {
+        this.currentUser = null;
+        this.currentProfile = null;
+      }
+      Router.handleRoute();
+    });
+  },
+
+  async loadProfile() {
+    if (!this.currentUser) return null;
+    const { data, error } = await supabaseClient.from('users').select('*').eq('id', this.currentUser.id).single();
+    if (!error && data) this.currentProfile = data;
+    return data;
+  },
+
+ async signUpEmail(email, password, fullName, referrerId = null) {
+  const { data, error } = await supabaseClient.auth.signUp({ 
+    email, password, 
+    options: { data: { full_name: fullName, referred_by: referrerId } } 
+  });
+  return { data, error };
+},
+
+  async signInEmail(email, password) {
+    const { data, error } = await supabaseClient.auth.signInWithPassword({ email, password });
+    return { data, error };
+  },
+
+  async sendOTP(phone) {
+    const { data, error } = await supabaseClient.auth.signInWithOtp({ phone: phone.startsWith('+') ? phone : `+91${phone}` });
+    return { data, error };
+  },
+
+  async verifyOTP(phone, token) {
+    const { data, error } = await supabaseClient.auth.verifyOtp({ phone: phone.startsWith('+') ? phone : `+91${phone}`, token, type: 'sms' });
+    return { data, error };
+  },
+
+  async signOut() {
+    await supabaseClient.auth.signOut();
+    this.currentUser = null;
+    this.currentProfile = null;
+    Router.navigate('landing');
+  },
+
+  isLoggedIn() { return !!this.currentUser; },
+isAdmin() { 
+  return this.currentProfile?.role === 'admin' || 
+         this.currentUser?.app_metadata?.role === 'admin'; 
+},
+};
+
+// ============================================================
+// ROUTER MODULE
+// ============================================================
+const Router = {
+  routes: { landing: 'renderLanding', login: 'renderLogin', reset: 'renderResetPassword', dashboard: 'renderDashboard', products: 'renderProducts', cart: 'renderCart', wallet: 'renderWallet', orders: 'renderOrders', withdrawals: 'renderWithdrawals', profile: 'renderProfile', admin: 'renderAdmin' },
+  protectedRoutes: ['dashboard','cart','wallet','orders','withdrawals','profile','admin'],
+  adminRoutes: ['admin'],
+
+navigate(route) {
+  if (window.location.hash === '#' + route) {
+    this.handleRoute();
+  } else {
+    window.location.hash = route;
+  }
+},
+
+handleRoute: async function() {
+  const hash = window.location.hash.replace('#', '') || 'landing';
+  const route = hash.split('?')[0];
+
+  // Wait for profile to load if user is logged in but profile missing
+  if (Auth.isLoggedIn() && !Auth.currentProfile) {
+    await Auth.loadProfile();
+  }
+
+  if (this.protectedRoutes.includes(route) && !Auth.isLoggedIn()) { 
+    this.navigate('login'); return; 
+  }
+  if (this.adminRoutes.includes(route)) {
+    if (!Auth.isAdmin()) { 
+      this.navigate('dashboard'); 
+      Toast.show('Access denied. Admin only.', 'error'); 
+      return; 
+    }
+  }
+
+  const renderFn = this.routes[route];
+  if (renderFn && window[renderFn]) await window[renderFn]();
+  else await window.renderLanding?.();
+  this.updateNav(route);
+},
+
+  updateNav(route) {
+    document.querySelectorAll('[data-route]').forEach(el => {
+      el.classList.toggle('active', el.dataset.route === route);
+    });
+  }
+};
+
+// ============================================================
+// TOAST MODULE
+// ============================================================
+const Toast = {
+  show(message, type = 'info', duration = 3500) {
+    const container = document.getElementById('toast-container');
+    const toast = document.createElement('div');
+    const icons = { success: '✓', error: '✕', warning: '⚠', info: 'ℹ' };
+    toast.className = `toast toast-${type}`;
+    toast.innerHTML = `<span class="toast-icon">${icons[type]}</span><span>${message}</span>`;
+    container.appendChild(toast);
+    setTimeout(() => toast.classList.add('show'), 10);
+    setTimeout(() => { toast.classList.remove('show'); setTimeout(() => toast.remove(), 300); }, duration);
+  }
+};
+
+// ============================================================
+// UTILS MODULE
+// ============================================================
+const Utils = {
+  formatCurrency(amount) { return `₹${parseFloat(amount || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`; },
+  formatDate(dateStr) { if (!dateStr) return 'N/A'; return new Date(dateStr).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }); },
+  formatDateTime(dateStr) { if (!dateStr) return 'N/A'; return new Date(dateStr).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }); },
+  timeAgo(dateStr) {
+    const diff = Date.now() - new Date(dateStr).getTime();
+    const minutes = Math.floor(diff / 60000);
+    if (minutes < 1) return 'just now';
+    if (minutes < 60) return `${minutes}m ago`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return `${hours}h ago`;
+    return `${Math.floor(hours / 24)}d ago`;
+  },
+  countdown(targetDate) {
+    const diff = new Date(targetDate).getTime() - Date.now();
+    if (diff <= 0) return { hours: 0, minutes: 0, seconds: 0, total: 0 };
+    return { hours: Math.floor(diff / 3600000), minutes: Math.floor((diff % 3600000) / 60000), seconds: Math.floor((diff % 60000) / 1000), total: diff };
+  },
+  statusBadge(status) {
+    const map = { pending_payment: ['⏳','badge-warning','Pending Payment'], payment_verifying: ['🔄','badge-info','Verifying'], active: ['✅','badge-success','Active'], failed: ['❌','badge-danger','Failed'], completed: ['🏆','badge-purple','Completed'], pending: ['⏳','badge-warning','Pending'], approved: ['✅','badge-success','Approved'], rejected: ['❌','badge-danger','Rejected'], processed: ['💸','badge-purple','Processed'] };
+    const [icon, cls, label] = map[status] || ['●','badge-info', status || 'Unknown'];
+    return `<span class="badge ${cls}">${icon} ${label}</span>`;
+  },
+  parseFeatures(features) { try { return typeof features === 'string' ? JSON.parse(features) : features || []; } catch { return []; } }
+};
+
+// ============================================================
+// DB MODULE
+// ============================================================
+const DB = {
+  async getProducts() {
+  const cached = Cache.get('products');
+  if (cached) return { data: cached, error: null };
+  const { data, error } = await supabaseClient.from('products').select('*').eq('is_active', true).order('price');
+  if (!error && data) Cache.set('products', data);
+  return { data: data || [], error };
+},
+  async getAllProducts() { const { data, error } = await supabaseClient.from('products').select('*').order('created_at', { ascending: false }); return { data: data || [], error }; },
+  async saveProduct(product) {
+    if (product.id) { const { id, ...rest } = product; return supabaseClient.from('products').update({ ...rest, updated_at: new Date().toISOString() }).eq('id', id); }
+    return supabaseClient.from('products').insert(product);
+  },
+  async deleteProduct(id) { return supabaseClient.from('products').update({ is_active: false }).eq('id', id); },
+  async getCart() { const { data, error } = await supabaseClient.from('carts').select('*, products(*)').eq('user_id', Auth.currentUser.id); return { data: data || [], error }; },
+  async addToCart(productId) { return supabaseClient.from('carts').upsert({ user_id: Auth.currentUser.id, product_id: productId }, { onConflict: 'user_id,product_id' }); },
+  async removeFromCart(productId) { return supabaseClient.from('carts').delete().eq('user_id', Auth.currentUser.id).eq('product_id', productId); },
+  async clearCart() { return supabaseClient.from('carts').delete().eq('user_id', Auth.currentUser.id); },
+  async createOrder(product, paymentMethod = 'razorpay') {
+    const cashbackPerDay = (product.price * product.cashback_percent) / 100;
+    return supabaseClient.from('orders').insert({ user_id: Auth.currentUser.id, product_id: product.id, product_snapshot: product, amount: product.price, cashback_percent: product.cashback_percent, cashback_per_day: cashbackPerDay, duration_days: product.duration_days, status: 'pending_payment', payment_method: paymentMethod }).select().single();
+  },
+async activateOrder(orderId, razorpayPaymentId) {
+    const { data, error } = await supabaseClient.rpc('activate_order', {
+      p_order_id: orderId,
+      p_razorpay_payment_id: razorpayPaymentId || null
+    });
+    return { data, error };
+  },
+  async getOrders() {
+  const cached = Cache.get('orders_' + Auth.currentUser.id);
+  if (cached) return { data: cached, error: null };
+  const { data, error } = await supabaseClient.from('orders').select('*, products(name, image_url)').eq('user_id', Auth.currentUser.id).order('created_at', { ascending: false });
+  if (!error && data) Cache.set('orders_' + Auth.currentUser.id, data);
+  return { data: data || [], error };
+},
+  async getAllOrders() { const { data, error } = await supabaseClient.from('orders').select('*, users(full_name, email), products(name)').order('created_at', { ascending: false }).limit(100); return { data: data || [], error }; },
+  async getCashbackLogs(orderId) { const { data } = await supabaseClient.from('cashback_logs').select('*').eq('order_id', orderId).order('day_number'); return data || []; },
+async getWalletTransactions(limit = 20) {
+  const cached = Cache.get('txns_' + Auth.currentUser.id);
+  if (cached) return cached;
+  const { data } = await supabaseClient.from('wallet_transactions').select('*').eq('user_id', Auth.currentUser.id).order('created_at', { ascending: false }).limit(limit);
+  if (data) Cache.set('txns_' + Auth.currentUser.id, data);
+  return data || [];
+},
+  async creditWallet(amount, type, description, refId = null, refType = null) { const { data, error } = await supabaseClient.rpc('credit_wallet', { p_user_id: Auth.currentUser.id, p_amount: amount, p_type: type, p_description: description, p_reference_id: refId, p_reference_type: refType }); return { data, error }; },
+async debitWallet(amount, type, description, refId = null, refType = null) { 
+    const { data, error } = await supabaseClient.rpc('debit_wallet', { 
+      p_user_id: Auth.currentUser.id, 
+      p_amount: parseFloat(amount), 
+      p_type: type, 
+      p_description: description, 
+      p_reference_id: refId || null, 
+      p_reference_type: refType || null 
+    }); 
+    console.log('debitWallet RPC response:', data, error);
+    return { data, error }; 
+  },
+  async requestWithdrawal(amount, upiId) {
+    const result = await this.debitWallet(amount, 'withdrawal', `Withdrawal request of ₹${amount}`);
+    if (result.error || !result.data?.success) return { error: result.error || { message: result.data?.error || 'Wallet debit failed' } };
+    return supabaseClient.from('withdrawals').insert({ user_id: Auth.currentUser.id, amount, upi_id: upiId }).select().single();
+  },
+  async getWithdrawals() { const { data } = await supabaseClient.from('withdrawals').select('*').eq('user_id', Auth.currentUser.id).order('created_at', { ascending: false }); return data || []; },
+  async getAllWithdrawals() { const { data } = await supabaseClient.from('withdrawals').select('*, users(full_name, email)').order('created_at', { ascending: false }); return data || []; },
+  async updateWithdrawal(id, status, adminNote = '') { return supabaseClient.from('withdrawals').update({ status, admin_note: adminNote, processed_at: new Date().toISOString() }).eq('id', id); },
+  async getAllUsers() { const { data } = await supabaseClient.from('users').select('*').order('created_at', { ascending: false }); return data || []; },
+  async getTestimonials() { const { data } = await supabaseClient.from('testimonials').select('*').eq('is_active', true); return data || []; },
+  async saveTestimonial(t) {
+    if (t.id) { const { id, ...rest } = t; return supabaseClient.from('testimonials').update(rest).eq('id', id); }
+    return supabaseClient.from('testimonials').insert(t);
+  },
+  async updateProfile(updates) { const { data, error } = await supabaseClient.from('users').update({ ...updates, updated_at: new Date().toISOString() }).eq('id', Auth.currentUser.id).select().single(); if (!error && data) Auth.currentProfile = data; return { data, error }; },
+  async getAnalytics() {
+    const [users, orders, withdrawals, transactions] = await Promise.all([
+      supabaseClient.from('users').select('id, created_at, total_invested, total_cashback_earned', { count: 'exact' }),
+      supabaseClient.from('orders').select('id, status, amount, cashback_earned', { count: 'exact' }),
+      supabaseClient.from('withdrawals').select('id, status, amount', { count: 'exact' }),
+      supabaseClient.from('wallet_transactions').select('type, amount').eq('type', 'cashback'),
+    ]);
+    return {
+      totalUsers: users.count || 0,
+      totalOrders: orders.count || 0,
+      activeOrders: (orders.data || []).filter(o => o.status === 'active').length,
+      totalRevenue: (orders.data || []).reduce((s, o) => s + parseFloat(o.amount || 0), 0),
+      totalCashbackPaid: (transactions.data || []).reduce((s, t) => s + parseFloat(t.amount || 0), 0),
+      pendingWithdrawals: (withdrawals.data || []).filter(w => w.status === 'pending').length,
+      totalWithdrawn: (withdrawals.data || []).filter(w => w.status === 'processed').reduce((s, w) => s + parseFloat(w.amount || 0), 0),
+    };
+  }
+};
+
+const ActiveTimers = {};
+// ── CACHE ──
+const Cache = {
+  data: {},
+  ttl: 30000, // 30 seconds
+  set(key, value) { this.data[key] = { value, time: Date.now() }; },
+  get(key) {
+    const d = this.data[key];
+    if (!d) return null;
+    if (Date.now() - d.time > this.ttl) { delete this.data[key]; return null; }
+    return d.value;
+  },
+  clear() { this.data = {}; }
+};
+window.Cache = Cache;
+function clearAllTimers() { 
+  Object.values(ActiveTimers).forEach(t => { 
+    clearInterval(t); 
+    clearTimeout(t); 
+  }); 
+  Object.keys(ActiveTimers).forEach(k => delete ActiveTimers[k]);
+}
+
+window.supabaseClient = supabaseClient;
+window.Auth = Auth; window.Router = Router; window.Toast = Toast; window.Utils = Utils; window.DB = DB;
+window.APP_CONFIG = APP_CONFIG; window.ActiveTimers = ActiveTimers; window.clearAllTimers = clearAllTimers;
+
+// ============================================================
+// SHARED UI COMPONENTS
+// ============================================================
+window.renderSidebar = function(active) {
+  const isAdmin = Auth.isAdmin();
+  const profile = Auth.currentProfile;
+  const navItems = [
+    ['dashboard', '🏠', 'Dashboard'],
+    ['products', '🛍️', 'Products'],
+    ['cart', '🛒', 'Cart'],
+    ['wallet', '💰', 'Wallet'],
+    ['orders', '📋', 'Orders'],
+    ['withdrawals', '📤', 'Withdrawals'],
+    ['profile', '👤', 'Profile'],
+    ...(isAdmin ? [['admin', '⚙️', 'Admin Panel']] : []),
+  ];
+  return `
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-brand">
+        <img src="favicon.png" alt="CashX" class="brand-logo" style="object-fit: contain;">
+        <span class="brand-name">Cash<span class="accent">X</span></span>
+      </div>
+      <div class="sidebar-user">
+        <div class="sidebar-avatar">${(profile?.full_name || 'U')[0].toUpperCase()}</div>
+        <div class="sidebar-user-info">
+          <div class="sidebar-user-name">${profile?.full_name?.split(' ')[0] || 'User'}</div>
+          <div class="sidebar-balance">${Utils.formatCurrency(profile?.wallet_balance)}</div>
+        </div>
+      </div>
+      <nav class="sidebar-nav">
+        ${navItems.map(([route, icon, label]) => `
+          <button class="sidebar-link ${active === route ? 'active' : ''}" data-route="${route}" onclick="closeSidebar();Router.navigate('${route}')">
+            <span class="sl-icon">${icon}</span>
+            <span class="sl-label">${label}</span>
+          </button>
+        `).join('')}
+      </nav>
+      <div class="sidebar-footer">
+        <button class="sidebar-link" onclick="Auth.signOut()">
+          <span class="sl-icon">🚪</span>
+          <span class="sl-label">Sign Out</span>
+        </button>
+      </div>
+    </aside>
+  `;
+};
+
+window.renderTopBar = function() {
+  const profile = Auth.currentProfile || {};
+  return `
+    <div class="topbar">
+      <button class="topbar-menu-btn" onclick="openSidebar()">☰</button>
+      <div class="topbar-search">
+        <input type="text" class="topbar-search-input" placeholder="Search products, orders...">
+      </div>
+      <div class="topbar-right">
+        <div class="topbar-balance">
+          <span class="topbar-balance-label">Balance</span>
+          <span class="topbar-balance-val">${Utils.formatCurrency(profile?.wallet_balance)}</span>
+        </div>
+        <div class="topbar-avatar" onclick="Router.navigate('profile')">${(profile?.full_name || 'U')[0].toUpperCase()}</div>
+      </div>
+    </div>
+  `;
+};
+
+window.renderMobileNav = function(active) {
+  const navItems = [['dashboard','🏠','Home'],['products','🛍️','Products'],['wallet','💰','Wallet'],['orders','📋','Orders'],['profile','👤','Profile']];
+  return `
+    <nav class="mobile-bottom-nav">
+      ${navItems.map(([route, icon, label]) => `
+        <button class="mbn-item ${active === route ? 'active' : ''}" onclick="closeSidebar();Router.navigate('${route}')">
+          <span class="mbn-icon">${icon}</span>
+          <span class="mbn-label">${label}</span>
+        </button>
+      `).join('')}
+    </nav>
+  `;
+};
+
+// ============================================================
+// LANDING PAGE
+// ============================================================
+window.renderLanding = async function() {
+  await clearAllTimers();
+  let testimonials = [], products = [];
+  try { testimonials = await DB.getTestimonials(); } catch(e) {}
+  try { products = (await DB.getProducts()).data.slice(0, 3); } catch(e) {}
+
+  // Demo testimonials if empty
+  if (!testimonials.length) {
+    testimonials = [
+      { id:1, user_name:'Rahul Sharma', user_location:'Mumbai', user_avatar:'https://i.pravatar.cc/60?img=3', rating:5, content:'I have been earning ₹219 daily from my ₹21,900 investment. CashX is absolutely legitimate and pays on time every day!', is_verified:true },
+      { id:2, user_name:'Priya Patel', user_location:'Ahmedabad', user_avatar:'https://i.pravatar.cc/60?img=5', rating:5, content:'Started with ₹499 and now I have 5 active products. The daily cashback to wallet is instant and withdrawals via UPI are fast.', is_verified:true },
+      { id:3, user_name:'Amit Kumar', user_location:'Delhi', user_avatar:'https://i.pravatar.cc/60?img=8', rating:5, content:'The dashboard is super easy to use. I can track every single cashback credit with the countdown timer. Love it!', is_verified:false },
+      { id:4, user_name:'Sneha Reddy', user_location:'Hyderabad', user_avatar:'https://i.pravatar.cc/60?img=9', rating:5, content:'Withdrew ₹4,500 last month and got it in under 2 hours. CashX has never failed me in 6 months of using it.', is_verified:true },
+    ];
+  }
+  // Demo products if empty
+  if (!products.length) {
+    products = [
+      { id:'demo-1', name:'Starter Plan', price:499, cashback_percent:1, duration_days:30, features:'["1% Daily Cashback","30 Days Duration","UPI Withdrawal","24/7 Support"]', description:'Perfect for beginners. Earn steady daily cashback with minimal risk.' },
+      { id:'demo-2', name:'Growth Plan', price:10990, cashback_percent:1, duration_days:60, features:'["1% Daily Cashback","60 Days Duration","Priority Withdrawal","Dedicated Manager"]', description:'For serious investors. Double the duration, double the compounding power.' },
+      { id:'demo-3', name:'Elite Plan', price:4990, cashback_percent:1, duration_days:90, features:'["1% Daily Cashback","90 Days Duration","Instant Withdrawal","VIP Support"]', description:'Maximum returns for committed investors. Earn ₹219/day for 90 days.' },
+    ];
+  }
+
+  document.getElementById('app').innerHTML = `
+    <div class="landing-page">
+      <nav class="landing-nav glass-nav">
+        <div class="nav-brand">
+          <img src="favicon.png" alt="CashX" class="brand-logo" style="object-fit: contain;">
+          <span class="brand-name">Cash<span class="accent">X</span></span>
+        </div>
+        <div class="nav-links">
+          <a href="#features" class="nav-link">Features</a>
+          <a href="#products" class="nav-link">Products</a>
+          <a href="#testimonials" class="nav-link">Reviews</a>
+          ${Auth.isLoggedIn()
+            ? `<button class="btn btn-primary" onclick="Router.navigate('dashboard')">Dashboard</button>`
+            : `<button class="btn btn-outline" onclick="Router.navigate('login')">Sign In</button>
+               <button class="btn btn-primary" onclick="Router.navigate('login')">Get Started</button>`
+          }
+        </div>
+        <button class="mobile-menu-btn" onclick="toggleMobileMenu()">☰</button>
+      </nav>
+      <div class="mobile-menu" id="mobile-menu">
+        <a href="#features" class="mobile-link" onclick="toggleMobileMenu()">Features</a>
+        <a href="#products" class="mobile-link" onclick="toggleMobileMenu()">Products</a>
+        <a href="#testimonials" class="mobile-link" onclick="toggleMobileMenu()">Reviews</a>
+        ${Auth.isLoggedIn()
+          ? `<button class="btn btn-primary w-full" onclick="Router.navigate('dashboard')">Dashboard</button>`
+          : `<button class="btn btn-primary w-full" onclick="Router.navigate('login')">Get Started Free</button>`}
+      </div>
+      <section class="hero">
+        <div class="hero-bg">
+          <div class="orb orb-1"></div><div class="orb orb-2"></div><div class="orb orb-3"></div>
+          <div class="grid-lines"></div>
+        </div>
+        <div class="hero-content">
+          <div class="hero-badge animate-in"><span class="badge-dot"></span>Live Daily Payouts — Trusted by 10,000+ Investors</div>
+          <h1 class="hero-title animate-in" style="animation-delay:0.1s">Your Money Works<br><span class="gradient-text">While You Sleep</span></h1>
+          <p class="hero-subtitle animate-in" style="animation-delay:0.2s">Earn guaranteed daily cashback on your investments. Transparent, instant, and 100% automated. Start with just 499.</p>
+          <div class="hero-actions animate-in" style="animation-delay:0.3s">
+            <button class="btn btn-primary btn-xl" onclick="Router.navigate('login')">Start Earning Today <span class="btn-arrow">→</span></button>
+            <div class="hero-stat-inline"><div class="pulse-dot"></div><span>₹2.4L+ paid out today</span></div>
+          </div>
+          <div class="hero-stats animate-in" style="animation-delay:0.4s">
+            <div class="hero-stat"><div class="hero-stat-value">₹2.4Cr+</div><div class="hero-stat-label">Total Cashback Paid</div></div>
+            <div class="stat-divider"></div>
+            <div class="hero-stat"><div class="hero-stat-value">10,000+</div><div class="hero-stat-label">Active Investors</div></div>
+            <div class="stat-divider"></div>
+            <div class="hero-stat"><div class="hero-stat-value">99.8%</div><div class="hero-stat-label">On-time Payouts</div></div>
+          </div>
+        </div>
+        <div class="floating-card animate-float glass-card">
+          <div class="fc-header"><span class="fc-icon">💸</span><span class="fc-title">Live Cashback</span><span class="fc-badge">LIVE</span></div>
+          <div class="fc-amount">+₹219.00</div>
+          <div class="fc-user">Rahul S. • Growth Product</div>
+          <div class="fc-time">Just now</div>
+        </div>
+      </section>
+
+      <section class="section" id="features">
+        <div class="section-header">
+          <div class="section-tag">Why CashX</div>
+          <h2 class="section-title">Built for <span class="gradient-text">Smart Investors</span></h2>
+          <p class="section-sub">Everything you need to grow your wealth on autopilot</p>
+        </div>
+        <div class="features-grid">
+          ${[['⚡','Instant Activation','Your product activates the moment payment is confirmed. No waiting, no delays.'],['🔒','Bank-Grade Security','Row-level security, encrypted transactions, and tamper-proof cashback timers.'],['📊','Real-time Dashboard','Live countdown timers, cashback logs, and portfolio analytics in one place.'],['💳','Fast Withdrawals','Request withdrawals anytime. Processed within 2-4 hours via UPI.'],['🔄','Auto-Reinvest','Use your wallet balance to buy more products and compound your earnings.'],['🛡️','Verified Payouts','Every cashback credit is logged, timestamped, and verifiable on your dashboard.']].map(([icon,title,desc]) => `
+            <div class="feature-card glass-card hover-lift"><div class="feature-icon">${icon}</div><h3 class="feature-title">${title}</h3><p class="feature-desc">${desc}</p></div>
+          `).join('')}
+        </div>
+      </section>
+
+      <div class="section-dark" id="products">
+        <div class="section-header">
+          <div class="section-tag">Investment Products</div>
+          <h2 class="section-title">Choose Your <span class="gradient-text">Growth Poducts</span></h2>
+        </div>
+    
+        </div>
+       <div class="products-grid" id="landing-plans-grid">
+          ${products.map((p, i) => {
+            const cashbackPerDay = p.price * p.cashback_percent / 100;
+            const totalReturn = cashbackPerDay * p.duration_days;
+            return `
+            <div class="product-card glass-card hover-lift animate-in" style="animation-delay:${i*0.1}s">
+              ${i === 1 ? '<div class="product-popular-badge">Most Popular</div>' : ''}
+              <div class="product-name">${p.name}</div>
+              <div class="product-price">${Utils.formatCurrency(p.price)}</div>
+              <div class="product-rate">${p.cashback_percent}% daily cashback • ${p.duration_days} days</div>
+              <div class="product-returns">
+                <div class="product-return-item"><span>Daily Cashback</span><strong class="text-success">+${Utils.formatCurrency(cashbackPerDay)}</strong></div>
+                <div class="product-return-item"><span>Total Returns</span><strong class="text-success">+${Utils.formatCurrency(totalReturn)}</strong></div>
+                <div class="product-return-item"><span>Duration</span><strong>${p.duration_days} Days</strong></div>
+              </div>
+              <ul class="product-features">${Utils.parseFeatures(p.features).map(f => `<li>✓ ${f}</li>`).join('')}</ul>
+              <button class="btn btn-primary w-full" onclick="Router.navigate('login')">Get Started →</button>
+            </div>`;
+          }).join('')}
+        </div>
+        <div class="text-center" style="margin-top:2rem">
+          <button class="btn btn-outline btn-lg" onclick="Router.navigate('products')">View All Products →</button>
+        </div>
+      </div>
+
+      <section class="section">
+        <div class="section-header">
+          <div class="section-tag">How It Works</div>
+          <h2 class="section-title">Start Earning in <span class="gradient-text">3 Simple Steps</span></h2>
+        </div>
+        <div class="steps-container">
+          ${[['01','📝','Create Account','Sign up with email or phone OTP. Verification takes under 60 seconds.'],['02','💰','Choose Products','Browse our investment products and pick one that matches your goals.'],['03','🎉','Earn Daily','Your cashback is credited automatically every 24 hours to your wallet.']].map(([num,icon,title,desc]) => `
+            <div class="step-card"><div class="step-number">${num}</div><div class="step-icon">${icon}</div><h3 class="step-title">${title}</h3><p class="step-desc">${desc}</p></div>
+          `).join('')}
+        </div>
+      </section>
+
+      <div class="section-dark" id="testimonials">
+        <div class="section-header">
+          <div class="section-tag">What Investors Say</div>
+          <h2 class="section-title">Trusted by <span class="gradient-text">Real People</span></h2>
+        </div>
+        <div class="testimonials-wrapper">
+          <div class="testimonials-track" id="testimonials-track">
+            ${[...testimonials, ...testimonials].map(t => `
+              <div class="testimonial-card glass-card">
+                <div class="testimonial-header">
+                  <img src="${t.user_avatar || 'https://i.pravatar.cc/60'}" alt="${t.user_name}" class="testimonial-avatar" onerror="this.src='https://i.pravatar.cc/60'">
+                  <div>
+                    <div class="testimonial-name">${t.user_name} ${t.is_verified ? '<span class="verified-badge">✓</span>' : ''}</div>
+                    <div class="testimonial-location">📍 ${t.user_location || 'India'}</div>
+                  </div>
+                  <div class="testimonial-stars">${'⭐'.repeat(t.rating || 5)}</div>
+                </div>
+                <p class="testimonial-text">"${t.content}"</p>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+      </div>
+
+      <section class="section cta-section">
+        <div class="cta-bg"><div class="orb orb-4"></div></div>
+        <div class="cta-content">
+          <h2 class="cta-title">Ready to Start <span class="gradient-text">Earning?</span></h2>
+          <p class="cta-sub">Join 10,000+ investors already earning daily cashback. No lock-in, no hidden fees.</p>
+          <button class="btn btn-primary btn-xl" onclick="Router.navigate('login')">Create Free Account <span class="btn-arrow">→</span></button>
+          <div class="cta-trust"><span>🔒 Secure</span><span>⚡ Instant Setup</span><span>💸 Daily Payouts</span></div>
+        </div>
+      </section>
+
+      <footer class="footer">
+        <div style="display:flex;align-items:center;gap:0.5rem">
+          <div class="brand-logo small">₹</div>
+          <span class="brand-name">Cash<span class="accent">X</span></span>
+        </div>
+        <p class="footer-text">© 2025 CashX. All rights reserved. Investment returns are subject to market conditions.</p>
+        <div class="footer-links"><a href="#">Privacy Policy</a><a href="#">Terms of Service</a><a href="#">Support</a></div>
+      </footer>
+    </div>
+  `;
+  startTestimonialScroll();
+};
+
+window.toggleMobileMenu = function() { document.getElementById('mobile-menu')?.classList.toggle('open'); };
+function startTestimonialScroll() {
+  const track = document.getElementById('testimonials-track');
+  if (!track) return;
+  let pos = 0;
+  const half = () => track.scrollWidth / 2;
+  ActiveTimers['testimonial'] = setInterval(() => {
+    pos += 0.5;
+    if (pos >= half()) pos = 0;
+    track.style.transform = `translateX(-${pos}px)`;
+  }, 16);
+}
+
+// ============================================================
+// LOGIN PAGE
+// ============================================================
+window.renderLogin = async function() {
+  if (Auth.isLoggedIn()) { Router.navigate('dashboard'); return; }
+  await clearAllTimers();
+  document.getElementById('app').innerHTML = `
+    <div class="auth-page">
+      <div class="auth-bg"><div class="orb orb-1"></div><div class="orb orb-2"></div></div>
+      <div class="auth-container">
+        <div class="auth-brand">
+          <img src="favicon.png" alt="CashX" class="brand-logo" style="object-fit: contain;">
+          <span class="brand-name">Cash<span class="accent">X</span></span>
+        </div>
+        <div class="auth-card glass-card animate-in">
+          <div class="auth-tabs">
+            <button class="auth-tab active" id="tab-login" onclick="switchAuthTab('login')">Sign In</button>
+            <button class="auth-tab" id="tab-register" onclick="switchAuthTab('register')">Register</button>
+          </div>
+          <div id="email-forms">
+  <div id="login-form">
+    <div class="form-group"><label class="form-label">Email Address</label><input type="email" class="form-input" id="login-email" placeholder="you@example.com" autocomplete="email"></div>
+    <div class="form-group"><label class="form-label">Password</label><input type="password" class="form-input" id="login-password" placeholder="••••••••" autocomplete="current-password" onkeydown="if(event.key==='Enter')handleEmailLogin()"></div>
+    <button class="btn btn-primary w-full btn-lg" id="login-btn" onclick="handleEmailLogin()">Sign In <span class="btn-arrow">→</span></button>
+  <p style="text-align:center;margin-top:0.75rem;font-size:0.8rem;color:var(--text-2)">
+  <button class="link-btn" onclick="showForgotPassword()">Forgot password?</button>
+</p>
+    </div>
+  <div id="register-form" style="display:none">
+    <div class="form-group"><label class="form-label">Full Name</label><input type="text" class="form-input" id="reg-name" placeholder="Your full name"></div>
+    <div class="form-group"><label class="form-label">Email Address</label><input type="email" class="form-input" id="reg-email" placeholder="you@example.com"></div>
+    <div class="form-group"><label class="form-label">Password</label><input type="password" class="form-input" id="reg-password" placeholder="Min 8 characters"></div>
+    <div class="form-group"><label class="form-label">Referral Code (Optional)</label><input type="text" class="form-input" id="reg-referral" placeholder="Enter referral code" maxlength="8" style="text-transform:uppercase"></div>
+    <button class="btn btn-primary w-full btn-lg" id="register-btn" onclick="handleEmailRegister()">Create Account <span class="btn-arrow">→</span></button>
+  </div>
+</div>
+<div class="auth-divider"><span>Secure • Encrypted • Trusted</span></div>
+<div class="auth-trust"><span>🔒 Bank-grade security</span><span>⚡ Instant login</span></div>
+        <p class="auth-back"><button onclick="Router.navigate('landing')" class="link-btn">← Back to Home</button></p>
+      </div>
+    </div>
+  `;
+};
+
+window.switchAuthTab = function(tab) {
+  document.getElementById('tab-login').classList.toggle('active', tab==='login');
+  document.getElementById('tab-register').classList.toggle('active', tab==='register');
+  document.getElementById('login-form').style.display = tab==='login' ? 'block' : 'none';
+  document.getElementById('register-form').style.display = tab==='register' ? 'block' : 'none';
+};
+window.handleEmailLogin = async function() {
+  const email = document.getElementById('login-email').value.trim();
+  const password = document.getElementById('login-password').value;
+  if (!email || !password) { Toast.show('Please fill all fields', 'warning'); return; }
+  const btn = document.getElementById('login-btn');
+  btn.disabled = true; btn.textContent = 'Signing in...';
+  const { error } = await Auth.signInEmail(email, password);
+  if (error) { Toast.show(error.message, 'error'); btn.disabled = false; btn.innerHTML = 'Sign In <span class="btn-arrow">→</span>'; }
+  else { Toast.show('Welcome back! 🎉', 'success'); Router.navigate('dashboard'); }
+};
+window.handleEmailRegister = async function() {
+  const name = document.getElementById('reg-name').value.trim();
+  const email = document.getElementById('reg-email').value.trim();
+  const password = document.getElementById('reg-password').value;
+  const refCode = document.getElementById('reg-referral').value.trim().toUpperCase();
+
+  if (!name || !email || !password) { Toast.show('Please fill all fields', 'warning'); return; }
+  if (password.length < 8) { Toast.show('Password must be at least 8 characters', 'warning'); return; }
+
+  const btn = document.getElementById('register-btn');
+  btn.disabled = true; btn.textContent = 'Creating account...';
+
+  // Validate referral code if entered
+  let referrerId = null;
+  if (refCode) {
+    const { data: referrer } = await supabaseClient.from('users').select('id').eq('referral_code', refCode).single();
+    if (!referrer) { Toast.show('Invalid referral code', 'error'); btn.disabled = false; btn.innerHTML = 'Create Account <span class="btn-arrow">→</span>'; return; }
+    referrerId = referrer.id;
+  }
+
+  const { error } = await Auth.signUpEmail(email, password, name, referrerId);
+  if (error) { Toast.show(error.message, 'error'); btn.disabled = false; btn.innerHTML = 'Create Account <span class="btn-arrow">→</span>'; }
+  else { Toast.show('Account created! Check your email to verify 🎉', 'success'); switchAuthTab('login'); }
+};
+
+window.renderResetPassword = async function() {
+  document.getElementById('app').innerHTML = `
+    <div class="auth-page">
+      <div class="auth-bg"><div class="orb orb-1"></div></div>
+      <div class="auth-container">
+        <div class="auth-brand">
+          <img src="favicon.png" alt="CashX" class="brand-logo" style="object-fit:contain;">
+          <span class="brand-name">Cash<span class="accent">X</span></span>
+        </div>
+        <div class="auth-card glass-card animate-in">
+          <h2 style="font-size:1.1rem;font-weight:700;margin-bottom:0.5rem">Set New Password</h2>
+          <p style="font-size:0.875rem;color:var(--text-2);margin-bottom:1.5rem">Enter your new password below.</p>
+          <div class="form-group">
+            <label class="form-label">New Password</label>
+            <input type="password" class="form-input" id="new-password" placeholder="Min 8 characters">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Confirm Password</label>
+            <input type="password" class="form-input" id="confirm-password" placeholder="Repeat password">
+          </div>
+          <button class="btn btn-primary w-full btn-lg" id="update-pass-btn" onclick="updatePassword()">
+            Update Password →
+          </button>
+        </div>
+      </div>
+    </div>
+  `;
+};
+
+window.updatePassword = async function() {
+  const newPass = document.getElementById('new-password').value;
+  const confirmPass = document.getElementById('confirm-password').value;
+
+  if (!newPass || newPass.length < 8) { Toast.show('Password must be at least 8 characters', 'warning'); return; }
+  if (newPass !== confirmPass) { Toast.show('Passwords do not match', 'warning'); return; }
+
+  const btn = document.getElementById('update-pass-btn');
+  btn.disabled = true; btn.textContent = 'Updating...';
+
+  const { error } = await supabaseClient.auth.updateUser({ password: newPass });
+
+  if (error) {
+    Toast.show(error.message, 'error');
+    btn.disabled = false; btn.textContent = 'Update Password →';
+    return;
+  }
+
+  Toast.show('Password updated successfully! 🎉', 'success');
+  Router.navigate('login');
+};
+
+// ============================================================
+// DASHBOARD
+// ============================================================
+window.renderDashboard = async function() {
+  await clearAllTimers();
+  const profile = Auth.currentProfile;
+
+  // Render shell immediately with cached/existing profile
+  document.getElementById('app').innerHTML = `
+    <div class="dashboard-layout">
+      ${renderSidebar('dashboard')}
+      <div class="main-content">
+        ${renderTopBar()}
+        <div class="page-content">
+          <div class="page-header">
+            <div>
+              <h1 class="page-title">Welcome back, ${profile?.full_name?.split(' ')[0] || 'Investor'} 👋</h1>
+              <p class="page-sub">Here's your portfolio overview</p>
+            </div>
+          </div>
+          <div id="dashboard-body">
+            <div style="display:flex;flex-direction:column;gap:0.75rem">
+              ${Array(4).fill('<div style="height:80px;background:rgba(255,255,255,0.03);border-radius:var(--radius);border:1px solid var(--border);animation:pulse 1.5s ease infinite"></div>').join('')}
+            </div>
+          </div>
+        </div>
+      </div>
+      ${renderMobileNav('dashboard')}
+    </div>
+  `;
+
+  // Load data in parallel
+  const [freshProfile, ordersRes, transactions] = await Promise.all([
+    Auth.loadProfile().catch(() => profile),
+    DB.getOrders().catch(() => ({ data: [] })),
+    DB.getWalletTransactions(5).catch(() => [])
+  ]);
+  const orders = ordersRes.data || [];
+  const activeOrders = orders.filter(o => o.status === 'active');
+  const todayCashback = activeOrders.reduce((s, o) => s + parseFloat(o.cashback_per_day || 0), 0);
+
+const dashBody = document.getElementById('dashboard-body');
+if (!dashBody) return;
+dashBody.innerHTML = `
+    <div class="stats-grid">
+      <div class="stat-card glass-card animate-in">
+        <div class="stat-icon">💰</div>
+        <div><div class="stat-label">Wallet Balance</div><div class="stat-value">${Utils.formatCurrency(freshProfile?.wallet_balance)}</div><div class="stat-change text-success">Available to withdraw</div></div>
+      </div>
+      <div class="stat-card glass-card animate-in" style="animation-delay:0.1s">
+        <div class="stat-icon">📈</div>
+        <div><div class="stat-label">Total Invested</div><div class="stat-value">${Utils.formatCurrency(freshProfile?.total_invested)}</div><div class="stat-change">${orders.length} orders total</div></div>
+      </div>
+      <div class="stat-card glass-card animate-in" style="animation-delay:0.2s">
+        <div class="stat-icon">💸</div>
+        <div><div class="stat-label">Total Cashback</div><div class="stat-value">${Utils.formatCurrency(freshProfile?.total_cashback_earned)}</div><div class="stat-change text-success">All time earnings</div></div>
+      </div>
+      <div class="stat-card glass-card animate-in" style="animation-delay:0.3s">
+        <div class="stat-icon">⚡</div>
+        <div><div class="stat-label">Today's Cashback</div><div class="stat-value text-success">${Utils.formatCurrency(todayCashback)}</div><div class="stat-change">${activeOrders.length} active products</div></div>
+      </div>
+    </div>
+
+    <div class="glass-card animate-in" style="animation-delay:0.4s;padding:1.25rem;margin-bottom:1.25rem;background:linear-gradient(135deg,rgba(99,102,241,0.1),rgba(34,211,238,0.05));border:1px solid rgba(99,102,241,0.25)">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem">
+        <div>
+          <div style="font-size:0.7rem;font-weight:700;color:var(--text-2);text-transform:uppercase;letter-spacing:0.05em">🎁 Refer & Earn</div>
+          <div style="font-size:0.8rem;color:var(--text-2);margin-top:0.2rem">Earn ₹50–₹600 bonus based on your friend's plan</div>
+        </div>
+        <div style="animation:shimmer 2s ease-in-out infinite;font-size:1.5rem">✨</div>
+      </div>
+      <div style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.75rem">
+        <div style="flex:1;background:rgba(255,255,255,0.05);border:1px solid var(--border);border-radius:var(--radius-sm);padding:0.6rem 1rem;font-family:var(--mono);font-weight:700;font-size:1rem;letter-spacing:0.15em;color:var(--primary-light)">
+          ${freshProfile?.referral_code || '------'}
+        </div>
+        <button onclick="navigator.clipboard.writeText('${freshProfile?.referral_code || ''}').then(()=>Toast.show('Referral code copied!','success'))" style="padding:0.6rem 0.875rem;background:rgba(99,102,241,0.15);border:1px solid rgba(99,102,241,0.3);border-radius:var(--radius-sm);color:var(--primary-light);cursor:pointer;font-size:0.9rem" title="Copy Code">
+          <i class="fa-regular fa-copy"></i>
+        </button>
+        <button onclick="shareReferral('${freshProfile?.referral_code || ''}')" style="padding:0.6rem 0.875rem;background:rgba(34,211,238,0.15);border:1px solid rgba(34,211,238,0.3);border-radius:var(--radius-sm);color:var(--accent);cursor:pointer;font-size:0.9rem" title="Share Link">
+          <i class="fa-solid fa-share-nodes"></i>
+        </button>
+      </div>
+      <div style="font-size:0.72rem;color:var(--text-3)">Share your referral link and earn when friends invest</div>
+    </div>
+
+    ${activeOrders.length > 0 ? `
+    <div class="section-card glass-card animate-in" style="animation-delay:0.5s">
+      <div class="card-header">
+        <h2 class="card-title">Active Products</h2>
+        <button class="btn btn-outline btn-sm" onclick="Router.navigate('orders')">View All</button>
+      </div>
+      <div class="active-orders-list">${activeOrders.slice(0,3).map(o => renderOrderCard(o)).join('')}</div>
+    </div>` : `
+    <div class="empty-state glass-card animate-in">
+      <div class="empty-icon">📦</div>
+      <h3>No active investments</h3>
+      <p>Start your first investment to begin earning daily cashback</p>
+      <button class="btn btn-primary" onclick="Router.navigate('products')">Browse Products →</button>
+    </div>`}
+
+    <div class="section-card glass-card animate-in" style="animation-delay:0.6s">
+      <div class="card-header">
+        <h2 class="card-title">Recent Transactions</h2>
+        <button class="btn btn-outline btn-sm" onclick="Router.navigate('wallet')">View All</button>
+      </div>
+      ${transactions.length > 0 ? `
+      <div class="transactions-list">
+        ${transactions.map(t => `
+          <div class="transaction-item">
+            <div class="tx-icon">${{cashback:'💸',withdrawal:'📤',reinvest:'🔄',refund:'↩️',bonus:'🎁',debit:'📤'}[t.type] || '💳'}</div>
+            <div class="tx-info"><div class="tx-desc">${t.description || t.type}</div><div class="tx-time">${Utils.timeAgo(t.created_at)}</div></div>
+            <div class="tx-amount ${['cashback','refund','bonus'].includes(t.type) ? 'text-success' : 'text-danger'}">${['cashback','refund','bonus'].includes(t.type) ? '+' : '-'}${Utils.formatCurrency(t.amount)}</div>
+          </div>
+        `).join('')}
+      </div>` : `<p class="empty-text">No transactions yet</p>`}
+    </div>
+
+    <div class="quick-actions glass-card animate-in">
+      <div class="card-header"><h2 class="card-title">Quick Actions</h2></div>
+      <div class="qa-grid">
+        <button class="qa-btn" onclick="Router.navigate('products')"><span>🛍️</span>Buy Plan</button>
+        <button class="qa-btn" onclick="Router.navigate('wallet')"><span>💰</span>Wallet</button>
+        <button class="qa-btn" onclick="Router.navigate('withdrawals')"><span>📤</span>Withdraw</button>
+        <button class="qa-btn" onclick="Router.navigate('orders')"><span>📋</span>Orders</button>
+      </div>
+    </div>
+  `;
+  activeOrders.forEach(o => { if (o.next_cashback_at) startOrderTimer(o.id, o.next_cashback_at); });
+};
+
+function renderOrderCard(order) {
+  const progress = order.duration_days > 0 ? (order.cashback_days_credited / order.duration_days) * 100 : 0;
+  const snap = order.product_snapshot || {};
+  return `
+    <div class="order-card glass-card-inner" onclick="openOrderDetail('${order.id}')">
+      <div class="order-card-header"><div class="order-name">${snap.name || order.products?.name || 'Investment Plan'}</div>${Utils.statusBadge(order.status)}</div>
+      <div class="order-details">
+        <div class="order-detail"><span>Invested</span><strong>${Utils.formatCurrency(order.amount)}</strong></div>
+        <div class="order-detail"><span>Daily Cashback</span><strong class="text-success">+${Utils.formatCurrency(order.cashback_per_day)}</strong></div>
+        <div class="order-detail"><span>Earned So Far</span><strong>${Utils.formatCurrency(order.cashback_earned)}</strong></div>
+        <div class="order-detail"><span>Days</span><strong>${order.cashback_days_credited || 0}/${order.duration_days}</strong></div>
+      </div>
+      <div class="progress-bar-wrap"><div class="progress-bar" style="width:${progress}%"></div></div>
+      <div class="order-timer">
+        <span class="timer-label">Next cashback in:</span>
+        <span class="timer-value" id="timer-val-${order.id}">Loading...</span>
+      </div>
+    </div>`;
+}
+
+function startOrderTimer(orderId, nextCashbackAt) {
+  const update = () => {
+    const el = document.getElementById(`timer-val-${orderId}`);
+    if (!el) { clearInterval(ActiveTimers[`timer-${orderId}`]); return; }
+    const { hours, minutes, seconds, total } = Utils.countdown(nextCashbackAt);
+    if (total <= 0) { el.textContent = 'Processing...'; el.style.color = '#22c55e'; return; }
+    el.textContent = `${String(hours).padStart(2,'0')}:${String(minutes).padStart(2,'0')}:${String(seconds).padStart(2,'0')}`;
+  };
+  update();
+  ActiveTimers[`timer-${orderId}`] = setInterval(update, 1000);
+}
+
+// ============================================================
+// ORDER DETAIL MODAL
+// ============================================================
+window.openOrderDetail = async function(orderId) {
+  let orders = [];
+  try { orders = (await DB.getOrders()).data; } catch(e) {}
+  const order = orders.find(o => o.id === orderId);
+  if (!order) return;
+  let logs = [];
+  try { logs = await DB.getCashbackLogs(orderId); } catch(e) {}
+  const snap = order.product_snapshot || {};
+  const progress = order.duration_days > 0 ? (order.cashback_days_credited / order.duration_days) * 100 : 0;
+  const circumference = 2 * Math.PI * 45;
+  const offset = circumference - (progress / 100) * circumference;
+  const totalCashback = order.cashback_per_day * order.duration_days;
+
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay';
+  modal.id = 'order-modal';
+  modal.innerHTML = `
+  <div style="width:40px;height:4px;background:rgba(255,255,255,0.2);border-radius:2px;margin:12px auto 0"></div>
+    <div class="modal glass-card">
+      <div class="modal-header">
+        <h2 class="modal-title">Order Details</h2>
+        <button class="modal-close" onclick="document.getElementById('order-modal').remove();clearInterval(ActiveTimers['modal-timer'])">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="order-modal-grid">
+          <div>
+            <div class="progress-ring-container">
+              <svg width="120" height="120" viewBox="0 0 100 100">
+                <circle cx="50" cy="50" r="45" fill="none" stroke="#1e293b" stroke-width="8"/>
+                <circle cx="50" cy="50" r="45" fill="none" stroke="url(#rg)" stroke-width="8" stroke-dasharray="${circumference}" stroke-dashoffset="${offset}" stroke-linecap="round" transform="rotate(-90 50 50)"/>
+                <defs><linearGradient id="rg" x1="0%" y1="0%" x2="100%" y2="0%"><stop offset="0%" stop-color="#6366f1"/><stop offset="100%" stop-color="#22d3ee"/></linearGradient></defs>
+              </svg>
+              <div class="ring-label"><div class="ring-percent">${Math.round(progress)}%</div><div class="ring-sub">Complete</div></div>
+            </div>
+            <div class="info-grid">
+              <div class="info-row"><span>Plan</span><strong>${snap.name || 'Plan'}</strong></div>
+              <div class="info-row"><span>Amount</span><strong>${Utils.formatCurrency(order.amount)}</strong></div>
+              <div class="info-row"><span>Daily Cashback</span><strong class="text-success">+${Utils.formatCurrency(order.cashback_per_day)}</strong></div>
+              <div class="info-row"><span>Days Credited</span><strong>${order.cashback_days_credited || 0}/${order.duration_days}</strong></div>
+              <div class="info-row"><span>Earned So Far</span><strong class="text-success">${Utils.formatCurrency(order.cashback_earned)}</strong></div>
+              <div class="info-row"><span>Remaining</span><strong>${Utils.formatCurrency(Math.max(0, totalCashback - (order.cashback_earned || 0)))}</strong></div>
+              <div class="info-row"><span>Status</span><strong>${Utils.statusBadge(order.status)}</strong></div>
+              <div class="info-row"><span>Started</span><strong>${Utils.formatDate(order.started_at)}</strong></div>
+              <div class="info-row"><span>Ends</span><strong>${Utils.formatDate(order.ends_at)}</strong></div>
+            </div>
+          </div>
+          <div>
+            ${order.status === 'active' && order.next_cashback_at ? `
+            <div class="countdown-container glass-card-inner">
+              <div class="countdown-label">⏰ Next Cashback In</div>
+              <div class="countdown-display">
+                <div class="countdown-unit"><div class="countdown-val" id="m-hours">00</div><div class="countdown-unit-label">Hours</div></div>
+                <div class="countdown-colon">:</div>
+                <div class="countdown-unit"><div class="countdown-val" id="m-mins">00</div><div class="countdown-unit-label">Mins</div></div>
+                <div class="countdown-colon">:</div>
+                <div class="countdown-unit"><div class="countdown-val" id="m-secs">00</div><div class="countdown-unit-label">Secs</div></div>
+              </div>
+              <div class="countdown-amount">+${Utils.formatCurrency(order.cashback_per_day)} incoming</div>
+            </div>` : ''}
+            <div>
+              <h4 class="log-title">Cashback History</h4>
+              <div class="log-list">
+                ${logs.length > 0
+                  ? logs.slice(-10).reverse().map(l => `<div class="log-item"><span class="log-day">Day ${l.day_number}</span><span class="log-amount text-success">+${Utils.formatCurrency(l.amount)}</span><span class="log-date">${Utils.formatDate(l.credited_at)}</span></div>`).join('')
+                  : '<p class="empty-text">No cashback credited yet</p>'}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  if (order.status === 'active' && order.next_cashback_at) {
+    const updateTimer = () => {
+      const { hours, minutes, seconds } = Utils.countdown(order.next_cashback_at);
+      const h = document.getElementById('m-hours'); if (h) h.textContent = String(hours).padStart(2,'0');
+      const m = document.getElementById('m-mins'); if (m) m.textContent = String(minutes).padStart(2,'0');
+      const s = document.getElementById('m-secs'); if (s) s.textContent = String(seconds).padStart(2,'0');
+    };
+    updateTimer();
+    ActiveTimers['modal-timer'] = setInterval(updateTimer, 1000);
+  }
+  modal.addEventListener('click', e => { if (e.target === modal) { modal.remove(); clearInterval(ActiveTimers['modal-timer']); } });
+};
+
+// ============================================================
+// PRODUCTS PAGE
+// ============================================================
+window.renderProducts = async function() {
+  await clearAllTimers();
+  document.getElementById('app').innerHTML = `
+    <div class="dashboard-layout">
+      ${renderSidebar('products')}
+      <div class="main-content">
+        ${renderTopBar()}
+        <div class="page-content">
+          <div class="page-header"><div><h1 class="page-title">Investment Products</h1><p class="page-sub">Choose a product and start earning daily cashback</p></div></div>
+          <div id="products-grid" class="loading-state"><div class="spinner"></div></div>
+        </div>
+      </div>
+      ${renderMobileNav('products')}
+    </div>
+  `;
+  let products = [], cartItems = [];
+  try { products = (await DB.getProducts()).data; } catch(e) {}
+  try { cartItems = Auth.isLoggedIn() ? (await DB.getCart()).data.map(c => c.product_id) : []; } catch(e) {}
+
+  const grid = document.getElementById('products-grid');
+  if (!grid) return;
+  grid.className = 'products-grid';
+  if (!products.length) { grid.innerHTML = '<div class="empty-state glass-card"><div class="empty-icon">📦</div><h3>No products available</h3><p>Please check back later or configure your Supabase database.</p></div>'; return; }
+  grid.innerHTML = products.map((p, i) => {
+    const cashbackPerDay = p.price * p.cashback_percent / 100;
+    const totalReturn = cashbackPerDay * p.duration_days;
+    const features = Utils.parseFeatures(p.features);
+    const inCart = cartItems.includes(p.id);
+    return `
+    <div class="product-card glass-card hover-lift animate-in" style="animation-delay:${i * 0.08}s">
+      <div class="product-img-wrap">
+        <img src="${p.image_url || 'https://images.unsplash.com/photo-1611974789855-9c2a0a7236a3?w=400'}" alt="${p.name}" class="product-img" onerror="this.src='https://images.unsplash.com/photo-1611974789855-9c2a0a7236a3?w=400'">
+        <div class="product-badge">${p.cashback_percent}% Daily</div>
+      </div>
+      <div class="product-body">
+        <h3 class="product-name">${p.name}</h3>
+        <p class="product-desc">${p.description || ''}</p>
+        <div class="product-stats">
+          <div><div class="ps-label">Investment</div><div class="ps-value">${Utils.formatCurrency(p.price)}</div></div>
+          <div><div class="ps-label">Daily Cashback</div><div class="ps-value text-success">+${Utils.formatCurrency(cashbackPerDay)}</div></div>
+          <div><div class="ps-label">Duration</div><div class="ps-value">${p.duration_days} Days</div></div>
+          <div><div class="ps-label">Total Returns</div><div class="ps-value text-success">+${Utils.formatCurrency(totalReturn)}</div></div>
+        </div>
+        ${features.length > 0 ? `<ul class="product-features">${features.map(f => `<li>✓ ${f}</li>`).join('')}</ul>` : ''}
+        <div class="product-actions">
+          <button class="btn btn-primary" onclick="handleBuyNow('${p.id}')">Buy Now</button>
+          <button class="btn ${inCart ? 'btn-success' : 'btn-outline'}" id="cart-btn-${p.id}" onclick="handleAddToCart('${p.id}')">
+            ${inCart ? '✓ In Cart' : '+ Cart'}
+          </button>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+};
+
+window.handleAddToCart = async function(productId) {
+  if (!Auth.isLoggedIn()) { Router.navigate('login'); return; }
+  const btn = document.getElementById(`cart-btn-${productId}`);
+  btn.disabled = true;
+  const { error } = await DB.addToCart(productId);
+  if (error) { Toast.show('Failed to add to cart', 'error'); }
+  else { btn.textContent = '✓ In Cart'; btn.className = 'btn btn-success'; Toast.show('Added to cart!', 'success'); }
+  btn.disabled = false;
+};
+
+window.handleBuyNow = async function(productId) {
+  if (!Auth.isLoggedIn()) { Router.navigate('login'); return; }
+  let products = [];
+  try { products = (await DB.getProducts()).data; } catch(e) {}
+  const product = products.find(p => p.id === productId);
+  if (!product) return;
+  showPaymentModal(product);
+};
+
+// ============================================================
+// PAYMENT MODAL
+// ============================================================
+window.showPaymentModal = function(product) {
+  const cashbackPerDay = product.price * product.cashback_percent / 100;
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay';
+  modal.id = 'payment-modal';
+  modal.innerHTML = `
+    <div class="modal glass-card">
+      <div class="modal-header">
+        <h2 class="modal-title">Complete Purchase</h2>
+        <button class="modal-close" onclick="document.getElementById('payment-modal').remove()">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="payment-product-summary">
+          <div class="payment-product-name">${product.name}</div>
+          <div class="payment-product-amount">${Utils.formatCurrency(product.price)}</div>
+          <div class="payment-product-details">${product.cashback_percent}% daily • ${product.duration_days} days • +${Utils.formatCurrency(cashbackPerDay)}/day</div>
+        </div>
+       <div class="payment-methods">
+  <h4 class="pm-title">Payment Method</h4>
+  <label class="pm-option active">
+    <input type="radio" name="pm" value="wallet" checked>
+    <span class="pm-icon">💰</span>
+    <div class="pm-info">
+      <div class="pm-name">Wallet Balance</div>
+      <div class="pm-sub">Available: ${Utils.formatCurrency(Auth.currentProfile?.wallet_balance)}</div>
+    </div>
+  </label>
+</div>
+        <div class="payment-summary-box glass-card-inner">
+          <div class="payment-row"><span>Plan Amount</span><span>${Utils.formatCurrency(product.price)}</span></div>
+          <div class="payment-row"><span>Daily Cashback</span><span class="text-success">+${Utils.formatCurrency(cashbackPerDay)}</span></div>
+          <div class="payment-row"><span>Duration</span><span>${product.duration_days} days</span></div>
+          <div class="payment-row total"><span>Total</span><span>${Utils.formatCurrency(product.price)}</span></div>
+        </div>
+        <button class="btn btn-primary w-full btn-xl" id="pay-btn" onclick="processPayment('${product.id}')">Pay ${Utils.formatCurrency(product.price)} →</button>
+        <p class="payment-note">🔒 Your payment is 100% secure and encrypted</p>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+};
+
+window.selectPM = function(el) { document.querySelectorAll('.pm-option').forEach(o => o.classList.remove('active')); el.classList.add('active'); };
+
+window.processPayment = async function(productId) {
+  let products = [];
+  try { products = (await DB.getProducts()).data; } catch(e) {}
+  const product = products.find(p => p.id === productId);
+  if (!product) return;
+  const btn = document.getElementById('pay-btn');
+  btn.disabled = true; btn.textContent = 'Processing...';
+  const pm = document.querySelector('input[name="pm"]:checked')?.value || 'razorpay';
+  const { data: order, error: orderError } = await DB.createOrder(product, pm);
+  if (orderError || !order) { Toast.show('Failed to create order. Please configure Supabase.', 'error'); btn.disabled = false; btn.textContent = 'Pay'; return; }
+ if (pm === 'wallet') {
+    const balance = parseFloat(Auth.currentProfile?.wallet_balance || 0);
+    const price = parseFloat(product.price);
+    
+    if (balance < price) { 
+      Toast.show(`Insufficient balance. You have ${Utils.formatCurrency(balance)}, need ${Utils.formatCurrency(price)}. First add Money in Wallet.`, 'error'); 
+      btn.disabled = false; 
+      btn.innerHTML = `Pay ${Utils.formatCurrency(price)} →`; 
+      return; 
+    }
+
+    btn.textContent = 'Debiting wallet...';
+
+    const debit = await DB.debitWallet(
+      price, 
+      'debit', 
+      `Purchase: ${product.name}`, 
+      order.id, 
+      'order'
+    );
+
+    console.log('Debit result:', debit);
+
+    if (!debit.data?.success) { 
+      const errMsg = debit.data?.error || debit.error?.message || 'Wallet debit failed';
+      Toast.show(errMsg, 'error'); 
+      // Cancel the pending order
+      await supabaseClient.from('orders').update({ status: 'failed' }).eq('id', order.id);
+      btn.disabled = false; 
+      btn.innerHTML = `Pay ${Utils.formatCurrency(price)} →`; 
+      return; 
+    }
+
+    btn.textContent = 'Activating plan...';
+  await DB.activateOrder(order.id, 'wallet_payment');
+
+// Handle referral bonus
+await handleReferralBonus(order.id, product.price);
+
+Cache.clear();
+await Auth.loadProfile();
+document.getElementById('payment-modal')?.remove();
+Toast.show(`Plan activated! Cashback starts in 24 hours 🎉`, 'success');
+Router.navigate('dashboard');
+return;
+  }
+Toast.show('Please deposit funds to your wallet first, then purchase.', 'info');
+btn.disabled = false;
+btn.innerHTML = `Pay ${Utils.formatCurrency(product.price)} →`;
+};
+
+// ============================================================
+// CART PAGE
+// ============================================================
+window.renderCart = async function() {
+  await clearAllTimers();
+  let cartItems = [];
+  try { cartItems = (await DB.getCart()).data; } catch(e) {}
+  document.getElementById('app').innerHTML = `
+    <div class="dashboard-layout">
+      ${renderSidebar('cart')}
+      <div class="main-content">
+        ${renderTopBar()}
+        <div class="page-content">
+          <div class="page-header"><h1 class="page-title">Cart <span class="count-badge">${cartItems.length}</span></h1></div>
+          ${cartItems.length === 0 ? `
+          <div class="empty-state glass-card">
+            <div class="empty-icon">🛒</div>
+            <h3>Your cart is empty</h3>
+            <p>Browse our investment products and add them to cart</p>
+            <button class="btn btn-primary" onclick="Router.navigate('products')">Browse Products →</button>
+          </div>` : `
+          <div class="cart-layout">
+            <div class="cart-items">
+              ${cartItems.map(item => {
+                const p = item.products; if (!p) return '';
+                const cashbackPerDay = p.price * p.cashback_percent / 100;
+                return `
+                <div class="cart-item glass-card">
+                  <img src="${p.image_url || 'https://images.unsplash.com/photo-1611974789855-9c2a0a7236a3?w=400'}" alt="${p.name}" class="cart-item-img" onerror="this.src='https://images.unsplash.com/photo-1611974789855-9c2a0a7236a3?w=400'">
+                  <div class="cart-item-info">
+                    <div class="cart-item-name">${p.name}</div>
+                    <div class="cart-item-detail">${p.cashback_percent}% daily • ${p.duration_days} days</div>
+                    <div class="cart-item-cashback">+${Utils.formatCurrency(cashbackPerDay)}/day</div>
+                  </div>
+                  <div class="cart-item-right">
+                    <div class="cart-item-price">${Utils.formatCurrency(p.price)}</div>
+                    <button class="btn btn-danger btn-sm" onclick="removeFromCart('${p.id}')">Remove</button>
+                  </div>
+                </div>`;
+              }).join('')}
+            </div>
+            <div class="cart-summary glass-card">
+              <h3 class="summary-title">Order Summary</h3>
+              <div class="summary-rows">
+                ${cartItems.map(item => item.products ? `<div class="summary-row"><span>${item.products.name}</span><span>${Utils.formatCurrency(item.products.price)}</span></div>` : '').join('')}
+                <div class="summary-divider"></div>
+                <div class="summary-total"><span>Total</span><strong>${Utils.formatCurrency(cartItems.reduce((s, i) => s + parseFloat(i.products?.price || 0), 0))}</strong></div>
+              </div>
+              <button class="btn btn-primary w-full btn-lg" style="margin-bottom:0.75rem" onclick="checkoutAll()">Checkout All →</button>
+              <button class="btn btn-outline w-full" onclick="Router.navigate('products')">Add More Products</button>
+            </div>
+          </div>`}
+        </div>
+      </div>
+      ${renderMobileNav('cart')}
+    </div>
+  `;
+};
+window.removeFromCart = async function(productId) { await DB.removeFromCart(productId); Toast.show('Removed from cart', 'info'); renderCart(); };
+window.checkoutAll = async function() {
+  let cartItems = [];
+  try { cartItems = (await DB.getCart()).data; } catch(e) {}
+  if (!cartItems.length) return;
+  if (cartItems[0]?.products) showPaymentModal(cartItems[0].products);
+};
+
+// ============================================================
+// WALLET PAGE
+// ============================================================
+window.renderWallet = async function() {
+  await clearAllTimers();
+const [profile, transactions, depositsRes] = await Promise.all([
+  Auth.loadProfile().catch(() => Auth.currentProfile),
+  DB.getWalletTransactions(50).catch(() => []),
+  supabaseClient.from('deposits').select('*').eq('user_id', Auth.currentUser.id).order('created_at', { ascending: false }).limit(10)
+]);
+const deposits = depositsRes.data || [];
+
+  document.getElementById('app').innerHTML = `
+    <div class="dashboard-layout">
+      ${renderSidebar('wallet')}
+      <div class="main-content">
+        ${renderTopBar()}
+        <div class="page-content">
+          <div class="page-header"><h1 class="page-title">Wallet</h1></div>
+          <div class="wallet-hero-card glass-card animate-in">
+            <div class="wallet-balance-section">
+              <div class="wallet-label">Available Balance</div>
+              <div class="wallet-amount">${Utils.formatCurrency(profile?.wallet_balance)}</div>
+              <div class="wallet-sub">Updated just now</div>
+            </div>
+            <div class="wallet-actions">
+              <button class="wallet-action-btn" onclick="showDepositModal()"><span>💳</span> Deposit</button>
+              <button class="wallet-action-btn" onclick="Router.navigate('withdrawals')"><span>📤</span> Withdraw</button>
+              <button class="wallet-action-btn" onclick="Router.navigate('products')"><span>🔄</span> Reinvest</button>
+            </div>
+            <div class="wallet-stats">
+              <div class="wallet-stat"><div class="ws-label">Total Earned</div><div class="ws-value">${Utils.formatCurrency(profile?.total_cashback_earned)}</div></div>
+              <div class="wallet-stat"><div class="ws-label">Total Invested</div><div class="ws-value">${Utils.formatCurrency(profile?.total_invested)}</div></div>
+            </div>
+          </div>
+
+          <div class="section-card glass-card animate-in" style="margin-bottom:1.25rem">
+            <div class="card-header">
+              <h2 class="card-title">My Deposits</h2>
+              <button class="btn btn-primary btn-sm" onclick="showDepositModal()">+ New Deposit</button>
+            </div>
+            ${deposits.length === 0 ? '<p class="empty-text">No deposits yet</p>' : `
+            <div class="withdrawals-list">
+              ${deposits.map(d => `
+              <div class="withdrawal-item">
+                <div>
+                  <div class="wi-upi" style="font-family:var(--mono);font-size:0.8rem">UTR: ${d.utr}</div>
+                  <div class="wi-date">${Utils.formatDateTime(d.created_at)}</div>
+                  ${d.admin_note ? `<div class="wi-note">${d.admin_note}</div>` : ''}
+                </div>
+                <div class="wi-right">
+                  <div class="wi-amount">${Utils.formatCurrency(d.amount)}</div>
+                  ${Utils.statusBadge(d.status)}
+                </div>
+              </div>`).join('')}
+            </div>`}
+          </div>
+
+          <div class="filter-bar glass-card">
+            <button class="filter-btn active" onclick="filterTransactions('all', this)">All</button>
+            <button class="filter-btn" onclick="filterTransactions('cashback', this)">Cashback</button>
+            <button class="filter-btn" onclick="filterTransactions('withdrawal', this)">Withdrawals</button>
+            <button class="filter-btn" onclick="filterTransactions('debit', this)">Debits</button>
+          </div>
+          <div class="section-card glass-card">
+            <div class="card-header">
+              <h2 class="card-title">Transaction History</h2>
+              <span class="badge badge-info">${transactions.length} transactions</span>
+            </div>
+            <div id="transactions-container" class="transactions-list">${renderTransactionList(transactions)}</div>
+          </div>
+        </div>
+      </div>
+      ${renderMobileNav('wallet')}
+    </div>
+  `;
+  window._allTransactions = transactions;
+};
+window.filterTransactions = function(type, btn) {
+  document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  const filtered = type === 'all' ? window._allTransactions : window._allTransactions.filter(t => t.type === type);
+  document.getElementById('transactions-container').innerHTML = renderTransactionList(filtered);
+};
+function renderTransactionList(txns) {
+  if (!txns.length) return '<p class="empty-text">No transactions found</p>';
+  return txns.map(t => `
+    <div class="transaction-item">
+      <div class="tx-icon">${{cashback:'💸',withdrawal:'📤',reinvest:'🔄',refund:'↩️',bonus:'🎁',debit:'📤'}[t.type] || '💳'}</div>
+      <div class="tx-info"><div class="tx-desc">${t.description || t.type}</div><div class="tx-time">${Utils.formatDateTime(t.created_at)}</div></div>
+      <div class="tx-right">
+        <div class="tx-amount ${['cashback','refund','bonus'].includes(t.type) ? 'text-success' : 'text-danger'}">${['cashback','refund','bonus'].includes(t.type) ? '+' : '-'}${Utils.formatCurrency(t.amount)}</div>
+        <div class="tx-balance">Bal: ${Utils.formatCurrency(t.balance_after)}</div>
+      </div>
+    </div>
+  `).join('');
+}
+
+// ============================================================
+// ORDERS PAGE
+// ============================================================
+window.renderOrders = async function() {
+  await clearAllTimers();
+  let orders = [];
+  try { orders = (await DB.getOrders()).data; } catch(e) {}
+  document.getElementById('app').innerHTML = `
+    <div class="dashboard-layout">
+      ${renderSidebar('orders')}
+      <div class="main-content">
+        ${renderTopBar()}
+        <div class="page-content">
+          <div class="page-header">
+            <h1 class="page-title">Order History</h1>
+            <div class="header-actions">
+              <select class="form-select" onchange="filterOrders(this.value)">
+                <option value="all">All Orders</option>
+                <option value="active">Active</option>
+                <option value="completed">Completed</option>
+                <option value="pending_payment">Pending</option>
+                <option value="failed">Failed</option>
+              </select>
+            </div>
+          </div>
+          <div id="orders-container">
+            ${orders.length === 0
+              ? `<div class="empty-state glass-card"><div class="empty-icon">📋</div><h3>No orders yet</h3><p>Your purchase history will appear here</p><button class="btn btn-primary" onclick="Router.navigate('products')">Browse Products</button></div>`
+              : orders.map(o => renderFullOrderCard(o)).join('')}
+          </div>
+        </div>
+      </div>
+      ${renderMobileNav('orders')}
+    </div>
+  `;
+  window._allOrders = orders;
+  orders.filter(o => o.status === 'active').forEach(o => { if (o.next_cashback_at) startOrderTimer(o.id, o.next_cashback_at); });
+};
+window.filterOrders = function(status) {
+  const filtered = status === 'all' ? window._allOrders : window._allOrders.filter(o => o.status === status);
+  document.getElementById('orders-container').innerHTML = filtered.length ? filtered.map(o => renderFullOrderCard(o)).join('') : '<p class="empty-text">No orders found</p>';
+  filtered.filter(o => o.status === 'active').forEach(o => { if (o.next_cashback_at) startOrderTimer(o.id, o.next_cashback_at); });
+};
+function renderFullOrderCard(order) {
+  const snap = order.product_snapshot || {};
+  const progress = order.duration_days > 0 ? ((order.cashback_days_credited || 0) / order.duration_days) * 100 : 0;
+  return `
+  <div class="order-full-card glass-card animate-in" onclick="openOrderDetail('${order.id}')">
+    <div class="ofc-header">
+      <div><div class="ofc-name">${snap.name || order.products?.name || 'Investment Plan'}</div><div class="ofc-date">${Utils.formatDate(order.created_at)}</div></div>
+      <div>${Utils.statusBadge(order.status)}<div class="ofc-amount">${Utils.formatCurrency(order.amount)}</div></div>
+    </div>
+    <div class="ofc-stats">
+      <div class="ofc-stat"><span>Daily</span><strong class="text-success">+${Utils.formatCurrency(order.cashback_per_day)}</strong></div>
+      <div class="ofc-stat"><span>Earned</span><strong>${Utils.formatCurrency(order.cashback_earned)}</strong></div>
+      <div class="ofc-stat"><span>Days</span><strong>${order.cashback_days_credited || 0}/${order.duration_days}</strong></div>
+      ${order.status === 'active' ? `<div class="ofc-stat"><span>Next</span><strong id="timer-val-${order.id}" class="text-success">...</strong></div>` : ''}
+    </div>
+    <div class="progress-bar-wrap"><div class="progress-bar" style="width:${progress}%"></div></div>
+    <div class="ofc-click-hint">Click to view details →</div>
+  </div>`;
+}
+
+// ============================================================
+// WITHDRAWALS PAGE
+// ============================================================
+window.renderWithdrawals = async function() {
+  await clearAllTimers();
+  let profile = Auth.currentProfile, withdrawals = [];
+  try { profile = await Auth.loadProfile(); } catch(e) {}
+  try { withdrawals = await DB.getWithdrawals(); } catch(e) {}
+  document.getElementById('app').innerHTML = `
+    <div class="dashboard-layout">
+      ${renderSidebar('withdrawals')}
+      <div class="main-content">
+        ${renderTopBar()}
+        <div class="page-content">
+          <div class="page-header"><h1 class="page-title">Withdrawals</h1></div>
+          <div class="withdrawal-balance-card glass-card animate-in">
+            <div>
+              <div class="wb-label">Available Balance</div>
+              <div class="wb-amount">${Utils.formatCurrency(profile?.wallet_balance)}</div>
+              <div class="wb-min">Minimum withdrawal: ${Utils.formatCurrency(150)}</div>
+            </div>
+            <button class="btn btn-primary btn-lg" onclick="showWithdrawalModal(${profile?.wallet_balance || 0}, '${profile?.upi_id || ''}')">Request Withdrawal</button>
+          </div>
+          <div class="section-card glass-card animate-in">
+            <div class="card-header"><h2 class="card-title">Withdrawal History</h2></div>
+            ${withdrawals.length === 0 ? `<div class="empty-state-sm"><p>No withdrawal requests yet</p></div>` : `
+            <div class="withdrawals-list">
+              ${withdrawals.map(w => `
+              <div class="withdrawal-item">
+                <div><div class="wi-upi">📱 ${w.upi_id}</div><div class="wi-date">${Utils.formatDateTime(w.created_at)}</div>${w.admin_note ? `<div class="wi-note">Note: ${w.admin_note}</div>` : ''}</div>
+                <div class="wi-right"><div class="wi-amount">${Utils.formatCurrency(w.amount)}</div>${Utils.statusBadge(w.status)}</div>
+              </div>`).join('')}
+            </div>`}
+          </div>
+        </div>
+      </div>
+      ${renderMobileNav('withdrawals')}
+    </div>
+  `;
+};
+window.showWithdrawalModal = function(balance, savedUpi) {
+  if (balance < 150) { Toast.show('Minimum withdrawal is ₹150', 'warning'); return; }
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay';
+  modal.id = 'withdrawal-modal';
+  modal.innerHTML = `
+    <div class="modal glass-card">
+      <div class="modal-header"><h2 class="modal-title">Request Withdrawal</h2><button class="modal-close" onclick="document.getElementById('withdrawal-modal').remove()">✕</button></div>
+      <div class="modal-body">
+        <div class="form-group"><label class="form-label">Amount (Min ₹150, Max ${Utils.formatCurrency(balance)})</label><input type="number" class="form-input" id="wd-amount" placeholder="Enter amount" min="150" max="${balance}" step="1"></div>
+        <div class="form-group"><label class="form-label">UPI ID</label><input type="text" class="form-input" id="wd-upi" placeholder="yourname@upi" value="${savedUpi}"></div>
+        <div class="wd-note glass-card-inner">⚡ Withdrawals processed within 2-4 hours via RazorpayX</div>
+        <button class="btn btn-primary w-full btn-lg" onclick="submitWithdrawal()">Confirm Withdrawal</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+};
+
+window.submitWithdrawal = async function() {
+  const amount = parseFloat(document.getElementById('wd-amount').value);
+  const upi = document.getElementById('wd-upi').value.trim();
+  if (!amount || amount < 150) { Toast.show('Minimum withdrawal is ₹150', 'warning'); return; }
+  if (!upi) { Toast.show('Enter your UPI ID', 'warning'); return; }
+  if (amount > (Auth.currentProfile?.wallet_balance || 0)) { Toast.show('Insufficient balance', 'error'); return; }
+  const { error } = await DB.requestWithdrawal(amount, upi);
+  if (error) { Toast.show(error.message || 'Withdrawal failed', 'error'); return; }
+  await DB.updateProfile({ upi_id: upi });
+  document.getElementById('withdrawal-modal')?.remove();
+  Toast.show('Withdrawal request submitted! Processing in 2-4 hours 🎉', 'success');
+  await Auth.loadProfile();
+  renderWithdrawals();
+};
+
+// ============================================================
+// PROFILE PAGE
+// ============================================================
+window.renderProfile = async function() {
+  await clearAllTimers();
+  let profile = Auth.currentProfile;
+  try { profile = await Auth.loadProfile(); } catch(e) {}
+  document.getElementById('app').innerHTML = `
+    <div class="dashboard-layout">
+      ${renderSidebar('profile')}
+      <div class="main-content">
+        ${renderTopBar()}
+        <div class="page-content">
+          <div class="page-header"><h1 class="page-title">Profile</h1></div>
+          <div class="profile-card glass-card animate-in">
+            <div class="profile-avatar-section">
+              <div class="profile-avatar">${(profile?.full_name || 'U')[0].toUpperCase()}</div>
+              <div class="profile-name">${profile?.full_name || 'User'}</div>
+              <div class="profile-email">${profile?.email || profile?.phone || ''}</div>
+              ${profile?.role === 'admin' ? '<span class="badge badge-purple">Admin</span>' : ''}
+            </div>
+            
+            <div class="profile-form">
+              <div class="form-group"><label class="form-label">Full Name</label><input type="text" class="form-input" id="p-name" value="${profile?.full_name || ''}"></div>
+              <div class="form-group"><label class="form-label">Email</label><input type="email" class="form-input" id="p-email" value="${profile?.email || ''}" readonly style="opacity:0.6"></div>
+              <div class="form-group">
+  <label class="form-label">Phone Number</label>
+  <input type="tel" class="form-input" id="p-phone" value="${profile?.phone || ''}" placeholder="10-digit mobile number">
+</div>
+              <div class="form-group"><label class="form-label">UPI ID (for withdrawals)</label><input type="text" class="form-input" id="p-upi" value="${profile?.upi_id || ''}" placeholder="yourname@upi"></div>
+             <div class="form-group">
+  <label class="form-label">Your Referral Code</label>
+  <div style="display:flex;gap:0.5rem;align-items:center">
+    <input type="text" class="form-input" value="${profile?.referral_code || 'Loading...'}" readonly style="font-family:var(--mono);font-weight:700;letter-spacing:0.1em;opacity:1">
+    <button onclick="navigator.clipboard.writeText('${profile?.referral_code || ''}').then(()=>Toast.show('Referral code copied!','success'))" class="btn btn-outline" style="flex-shrink:0">Copy</button>
+  </div>
+  <div style="font-size:0.72rem;margin-top:0.5rem;padding:0.5rem 0.75rem;border-radius:6px;background:linear-gradient(135deg,rgba(99,102,241,0.15),rgba(34,211,238,0.1));border:1px solid rgba(99,102,241,0.3);animation:shimmer 2s ease-in-out infinite;background-size:200% auto">
+  ✨ Share this code. Earn <strong style="color:#818cf8">₹50–₹600 bonus</strong> based on your friend's plan (₹600→₹50, ₹1500→₹170, ₹5000→₹250, ₹7500→₹350, ₹12000→₹600). <strong style="color:#22d3ee"> Refer Now <i class="fa-solid fa-share"></i></strong>
+</div>
+</div>
+              <button class="btn btn-primary btn-lg" id="save-profile-btn" onclick="saveProfile()">Save Changes</button>
+            </div>
+          </div>
+          <div class="profile-stats-grid">
+            <div class="psg-card glass-card"><div class="psg-label">Member Since</div><div class="psg-value">${Utils.formatDate(profile?.created_at)}</div></div>
+            <div class="psg-card glass-card"><div class="psg-label">Total Invested</div><div class="psg-value">${Utils.formatCurrency(profile?.total_invested)}</div></div>
+            <div class="psg-card glass-card"><div class="psg-label">Cashback Earned</div><div class="psg-value">${Utils.formatCurrency(profile?.total_cashback_earned)}</div></div>
+          </div>
+          <div class="danger-zone glass-card">
+            <h3 class="dz-title">Account</h3>
+            <button class="btn btn-outline-danger" onclick="if(confirm('Sign out of CashX?'))Auth.signOut()">Sign Out</button>
+          </div>
+        </div>
+      </div>
+      ${renderMobileNav('profile')}
+    </div>
+  `;
+};
+window.saveProfile = async function() {
+  const name = document.getElementById('p-name').value.trim();
+  const upi = document.getElementById('p-upi').value.trim();
+  const phone = document.getElementById('p-phone').value.trim();
+
+  if (phone && !/^\d{10}$/.test(phone)) {
+    Toast.show('Enter a valid 10-digit phone number', 'warning');
+    return;
+  }
+
+  const btn = document.getElementById('save-profile-btn');
+  btn.disabled = true; btn.textContent = 'Saving...';
+
+  const { error } = await DB.updateProfile({ 
+    full_name: name, 
+    upi_id: upi,
+    phone: phone || null
+  });
+
+  if (error) Toast.show('Failed to save: ' + error.message, 'error');
+  else Toast.show('Profile updated!', 'success');
+
+  btn.disabled = false; btn.textContent = 'Save Changes';
+};
+
+// ============================================================
+// ADMIN PANEL
+// ============================================================
+window.renderAdmin = async function() {
+  await clearAllTimers();
+  if (!Auth.isAdmin()) { Router.navigate('dashboard'); return; }
+  document.getElementById('app').innerHTML = `
+    <div class="dashboard-layout">
+      ${renderSidebar('admin')}
+      <div class="main-content">
+        ${renderTopBar()}
+        <div class="page-content">
+          <div class="page-header"><h1 class="page-title">Admin Panel</h1><span class="badge badge-purple">Administrator</span></div>
+          <div class="admin-tabs glass-card">
+            <button class="admin-tab active" onclick="switchAdminTab('analytics', this)">📊 Analytics</button>
+            <button class="admin-tab" onclick="switchAdminTab('products', this)">📦 Products</button>
+            <button class="admin-tab" onclick="switchAdminTab('users', this)">👥 Users</button>
+            <button class="admin-tab" onclick="switchAdminTab('orders', this)">📋 Orders</button>
+            <button class="admin-tab" onclick="switchAdminTab('withdrawals', this)">💸 Withdrawals</button>
+            <button class="admin-tab" onclick="switchAdminTab('deposits', this)">💰 Deposits</button>
+            <button class="admin-tab" onclick="switchAdminTab('upi', this)">📱 UPI Accounts</button>
+            <button class="admin-tab" onclick="switchAdminTab('testimonials', this)">⭐ Reviews</button>
+          </div>
+          <div id="admin-content"><div class="loading-state"><div class="spinner"></div></div></div>
+        </div>
+      </div>
+      ${renderMobileNav('admin')}
+    </div>
+  `;
+  switchAdminTab('analytics', document.querySelector('.admin-tab'));
+};
+
+window.switchAdminTab = async function(tab, btn) {
+  document.querySelectorAll('.admin-tab').forEach(b => b.classList.remove('active'));
+  btn?.classList.add('active');
+  const container = document.getElementById('admin-content');
+container.innerHTML = '<div style="display:flex;flex-direction:column;gap:0.75rem;padding:0.5rem">' + 
+  Array(3).fill('<div style="height:80px;background:rgba(255,255,255,0.03);border-radius:var(--radius);border:1px solid var(--border);animation:pulse 1.5s ease infinite"></div>').join('') + 
+  '</div>';
+  switch (tab) {
+    case 'analytics': await renderAdminAnalytics(container); break;
+    case 'products': await renderAdminProducts(container); break;
+    case 'users': await renderAdminUsers(container); break;
+    case 'orders': await renderAdminOrders(container); break;
+    case 'withdrawals': await renderAdminWithdrawals(container); break;
+    case 'testimonials': await renderAdminTestimonials(container); break;
+    case 'deposits': await renderAdminDeposits(container); break;
+    case 'upi': await renderAdminUPI(container); break;
+  }
+};
+
+async function renderAdminAnalytics(container) {
+  let stats = { totalUsers:0, totalOrders:0, activeOrders:0, totalRevenue:0, totalCashbackPaid:0, pendingWithdrawals:0, totalWithdrawn:0 };
+  try { stats = await DB.getAnalytics(); } catch(e) {}
+  container.innerHTML = `
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.75rem">
+      ${[
+        ['👥','Total Users',stats.totalUsers,'Registered accounts','badge-info'],
+        ['📋','Total Orders',stats.totalOrders,`${stats.activeOrders} active`,'badge-success'],
+        ['💰','Total Revenue',Utils.formatCurrency(stats.totalRevenue),'From all orders','badge-purple'],
+        ['💸','Cashback Paid',Utils.formatCurrency(stats.totalCashbackPaid),'To all users','badge-warning'],
+        ['⏳','Pending Withdrawals',stats.pendingWithdrawals,'Awaiting approval','badge-danger'],
+        ['✅','Total Withdrawn',Utils.formatCurrency(stats.totalWithdrawn),'Processed','badge-success']
+      ].map(([icon,label,value,sub,cls]) => `
+        <div style="background:var(--glass);border:1px solid var(--glass-border);border-radius:var(--radius);padding:1rem;display:flex;flex-direction:column;gap:0.4rem;min-width:0;overflow:hidden">
+          <div style="font-size:1.5rem">${icon}</div>
+          <div style="font-size:0.65rem;font-weight:600;color:var(--text-2);text-transform:uppercase;letter-spacing:0.05em">${label}</div>
+          <div style="font-size:1.1rem;font-weight:800;font-family:var(--mono);word-break:break-all">${value}</div>
+          <span class="badge ${cls}" style="font-size:0.6rem;align-self:flex-start">${sub}</span>
+        </div>
+      `).join('')}
+    </div>
+  `;
+}
+
+async function renderAdminUsers(container) {
+  let users = [];
+  try { users = await DB.getAllUsers(); } catch(e) {}
+  container.innerHTML = `
+    <div>
+      <div class="admin-section-header"><h2 class="card-title">Users (${users.length})</h2></div>
+      <div style="display:flex;flex-direction:column;gap:0.75rem">
+        ${users.map(u => `
+        <div class="glass-card" style="padding:1rem">
+          <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:0.5rem">
+            <div class="user-avatar-sm">${(u.full_name||'U')[0]}</div>
+            <div style="flex:1;min-width:0">
+              <div style="font-weight:700;font-size:0.875rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${u.full_name||'N/A'}</div>
+              <div style="font-size:0.72rem;color:var(--text-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${u.email||u.phone||''}</div>
+            </div>
+            ${u.role==='admin'?'<span class="badge badge-purple">Admin</span>':'<span class="badge badge-info">User</span>'}
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.5rem;font-size:0.75rem">
+            <div><div style="color:var(--text-3)">Balance</div><div style="color:var(--success);font-weight:600;font-family:var(--mono)">${Utils.formatCurrency(u.wallet_balance)}</div></div>
+            <div><div style="color:var(--text-3)">Invested</div><div style="font-weight:600;font-family:var(--mono)">${Utils.formatCurrency(u.total_invested)}</div></div>
+            <div><div style="color:var(--text-3)">Joined</div><div style="font-weight:600">${Utils.formatDate(u.created_at)}</div></div>
+          </div>
+        </div>`).join('')}
+      </div>
+    </div>
+  `;
+}
+
+window.showProductModal = function(product = null) {
+  const isEdit = !!product;
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay';
+  modal.id = 'product-modal';
+  modal.innerHTML = `
+    <div class="modal glass-card modal-lg">
+      <div class="modal-header"><h2 class="modal-title">${isEdit ? 'Edit' : 'Add'} Product</h2><button class="modal-close" onclick="document.getElementById('product-modal').remove()">✕</button></div>
+      <div class="modal-body">
+        <div class="form-grid">
+          <div class="form-group"><label class="form-label">Product Name</label><input type="text" class="form-input" id="prod-name" value="${product?.name || ''}" placeholder="e.g. Growth Plan"></div>
+          <div class="form-group"><label class="form-label">Price (₹)</label><input type="number" class="form-input" id="prod-price" value="${product?.price || ''}" placeholder="499"></div>
+          <div class="form-group"><label class="form-label">Cashback %</label><input type="number" class="form-input" id="prod-cashback" value="${product?.cashback_percent || 1}" step="0.1" placeholder="1.0"></div>
+          <div class="form-group"><label class="form-label">Duration (Days)</label><input type="number" class="form-input" id="prod-duration" value="${product?.duration_days || 30}" placeholder="30"></div>
+          <div class="form-group form-full"><label class="form-label">Description</label><textarea class="form-input" id="prod-desc" rows="2">${product?.description || ''}</textarea></div>
+          <div class="form-group form-full"><label class="form-label">Image URL</label><input type="url" class="form-input" id="prod-image" value="${product?.image_url || ''}" placeholder="https://..."></div>
+          <div class="form-group form-full"><label class="form-label">Features (one per line)</label><textarea class="form-input" id="prod-features" rows="4" placeholder="1% Daily Cashback&#10;30 Days Duration">${Utils.parseFeatures(product?.features).join('\n')}</textarea></div>
+          <div class="form-group"><label class="form-check"><input type="checkbox" id="prod-active" ${product?.is_active !== false ? 'checked' : ''}><span>Active (visible to users)</span></label></div>
+        </div>
+        <button class="btn btn-primary w-full btn-lg" onclick="saveProduct('${product?.id || ''}')">
+          ${isEdit ? 'Update Product' : 'Create Product'}
+        </button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+};
+
+window.saveProduct = async function(productId) {
+  const features = document.getElementById('prod-features').value.split('\n').filter(f => f.trim());
+  const product = { id: productId || undefined, name: document.getElementById('prod-name').value.trim(), price: parseFloat(document.getElementById('prod-price').value), cashback_percent: parseFloat(document.getElementById('prod-cashback').value), duration_days: parseInt(document.getElementById('prod-duration').value), description: document.getElementById('prod-desc').value.trim(), image_url: document.getElementById('prod-image').value.trim(), features: JSON.stringify(features), is_active: document.getElementById('prod-active').checked };
+  if (!product.name || !product.price) { Toast.show('Name and price are required', 'warning'); return; }
+  const { error } = await DB.saveProduct(product);
+  if (error) { Toast.show('Failed to save product: ' + error.message, 'error'); return; }
+  document.getElementById('product-modal').remove();
+  Toast.show(`Product ${productId ? 'updated' : 'created'}!`, 'success');
+  switchAdminTab('products', document.querySelectorAll('.admin-tab')[1]);
+};
+
+window.deleteProduct = async function(id) {
+  if (!confirm('Deactivate this product?')) return;
+  const { error } = await DB.deleteProduct(id);
+  if (error) { Toast.show('Failed', 'error'); return; }
+  Toast.show('Product deactivated', 'success');
+  switchAdminTab('products', document.querySelectorAll('.admin-tab')[1]);
+};
+
+async function renderAdminProducts(container) {
+  let products = [];
+  try { products = (await DB.getAllProducts()).data; } catch(e) {}
+  container.innerHTML = `
+    <div>
+      <div class="admin-section-header">
+        <h2 class="card-title">Products (${products.length})</h2>
+        <button class="btn btn-primary" onclick="showProductModal()">+ Add Product</button>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:0.75rem">
+        ${products.map(p => {
+          const cashbackPerDay = p.price * p.cashback_percent / 100;
+          return `
+          <div class="glass-card" style="padding:1rem">
+            <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:0.5rem">
+              <img src="${p.image_url || 'https://images.unsplash.com/photo-1611974789855-9c2a0a7236a3?w=80'}" style="width:48px;height:36px;border-radius:6px;object-fit:cover;flex-shrink:0" onerror="this.src='https://images.unsplash.com/photo-1611974789855-9c2a0a7236a3?w=80'">
+              <div style="flex:1;min-width:0">
+                <div style="font-weight:700;font-size:0.875rem">${p.name}</div>
+                <div style="font-size:0.72rem;color:var(--text-2)">${p.duration_days} days • ${p.cashback_percent}% daily</div>
+              </div>
+              ${p.is_active ? '<span class="badge badge-success">Active</span>' : '<span class="badge badge-danger">Inactive</span>'}
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.5rem;font-size:0.75rem;margin-bottom:0.75rem">
+              <div><div style="color:var(--text-3)">Price</div><div style="font-weight:700;font-family:var(--mono)">${Utils.formatCurrency(p.price)}</div></div>
+              <div><div style="color:var(--text-3)">Daily Cashback</div><div style="color:var(--success);font-weight:700;font-family:var(--mono)">+${Utils.formatCurrency(cashbackPerDay)}</div></div>
+            </div>
+            <div style="display:flex;gap:0.5rem">
+              <button class="btn btn-outline btn-sm" style="flex:1" onclick='showProductModal(${JSON.stringify(p).replace(/'/g,"&#39;")})'>✏️ Edit</button>
+              <button class="btn btn-danger btn-sm" style="flex:1" onclick="deleteProduct('${p.id}')">🗑 Deactivate</button>
+            </div>
+          </div>`;
+        }).join('')}
+      </div>
+    </div>
+  `;
+}
+
+async function renderAdminOrders(container) {
+  let orders = [];
+  try { orders = (await DB.getAllOrders()).data; } catch(e) {}
+  container.innerHTML = `
+    <div>
+      <div class="admin-section-header"><h2 class="card-title">Orders (${orders.length})</h2></div>
+      <div style="display:flex;flex-direction:column;gap:0.75rem">
+        ${orders.map(o => `
+        <div class="glass-card" style="padding:1rem">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:0.5rem">
+            <div>
+              <div style="font-weight:700;font-size:0.875rem">${o.users?.full_name||o.users?.email||'N/A'}</div>
+              <div style="font-size:0.75rem;color:var(--text-2)">${o.products?.name||o.product_snapshot?.name||'N/A'}</div>
+              <div style="font-size:0.7rem;color:var(--text-3);margin-top:0.2rem">${Utils.formatDate(o.created_at)}</div>
+            </div>
+            <div style="text-align:right">
+              <div style="font-size:1rem;font-weight:800;font-family:var(--mono)">${Utils.formatCurrency(o.amount)}</div>
+              <div style="margin-top:0.25rem">${Utils.statusBadge(o.status)}</div>
+              <div style="font-size:0.75rem;color:var(--success);font-family:var(--mono);margin-top:0.2rem">+${Utils.formatCurrency(o.cashback_earned)}</div>
+            </div>
+          </div>
+        </div>`).join('')}
+      </div>
+    </div>
+  `;
+}
+
+async function renderAdminWithdrawals(container) {
+  let withdrawals = [];
+  try { withdrawals = await DB.getAllWithdrawals(); } catch(e) {}
+  container.innerHTML = `
+    <div>
+      <div class="admin-section-header"><h2 class="card-title">Withdrawals (${withdrawals.length})</h2></div>
+      <div style="display:flex;flex-direction:column;gap:0.75rem">
+        ${withdrawals.map(w => `
+        <div class="glass-card" style="padding:1rem">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:0.75rem">
+            <div>
+              <div style="font-weight:700;font-size:0.875rem">${w.users?.full_name||w.users?.email||'N/A'}</div>
+              <div style="font-size:0.75rem;color:var(--text-2);margin-top:0.2rem">📱 ${w.upi_id}</div>
+              <div style="font-size:0.7rem;color:var(--text-3);margin-top:0.1rem">${Utils.formatDate(w.requested_at||w.created_at)}</div>
+            </div>
+            <div style="text-align:right">
+              <div style="font-size:1rem;font-weight:800;font-family:var(--mono)">${Utils.formatCurrency(w.amount)}</div>
+              <div style="margin-top:0.25rem">${Utils.statusBadge(w.status)}</div>
+            </div>
+          </div>
+          ${w.status==='pending'?`
+          <div style="display:flex;gap:0.5rem">
+            <button class="btn btn-success btn-sm" style="flex:1" onclick="approveWithdrawal('${w.id}')">✓ Approve</button>
+            <button class="btn btn-danger btn-sm" style="flex:1" onclick="rejectWithdrawal('${w.id}')">✕ Reject</button>
+          </div>`:''}
+        </div>`).join('')}
+      </div>
+    </div>
+  `;
+}
+
+window.approveWithdrawal = async function(id) {
+  // Get withdrawal details first
+  const { data: w } = await supabaseClient
+    .from('withdrawals')
+    .select('*, users(full_name)')
+    .eq('id', id)
+    .single();
+
+  // Show UPI details to admin prominently
+  const confirmed = confirm(
+    `Send ₹${w.amount} to UPI: ${w.upi_id}\nUser: ${w.users?.full_name}\n\nHave you sent the money?`
+  );
+  
+  if (!confirmed) return;
+
+  const { error } = await DB.updateWithdrawal(id, 'processed', 'Payment sent via UPI');
+  if (error) { Toast.show('Failed', 'error'); return; }
+  Toast.show('Withdrawal marked as processed', 'success');
+  switchAdminTab('withdrawals', document.querySelectorAll('.admin-tab')[4]);
+};
+window.rejectWithdrawal = async function(id) {
+  const reason = prompt('Rejection reason (optional):') || 'Rejected by admin';
+  const { error } = await DB.updateWithdrawal(id, 'rejected', reason);
+  if (error) { Toast.show('Failed', 'error'); return; }
+  Toast.show('Withdrawal rejected', 'info');
+  switchAdminTab('withdrawals', document.querySelectorAll('.admin-tab')[4]);
+};
+
+async function renderAdminTestimonials(container) {
+  let testimonials = [];
+  try { testimonials = await DB.getTestimonials(); } catch(e) {}
+  container.innerHTML = `
+    <div>
+      <div class="admin-section-header"><h2 class="card-title">Testimonials (${testimonials.length})</h2><button class="btn btn-primary" onclick="showTestimonialModal()">+ Add Review</button></div>
+      <div class="testimonials-admin-grid">
+        ${testimonials.map(t => `
+        <div class="testimonial-admin-card glass-card">
+          <div class="testimonial-header">
+            <img src="${t.user_avatar || 'https://i.pravatar.cc/50'}" alt="${t.user_name}" class="testimonial-avatar" onerror="this.src='https://i.pravatar.cc/50'">
+            <div><div class="testimonial-name">${t.user_name}</div><div class="text-muted">${t.user_location || ''}</div></div>
+          </div>
+          <p class="testimonial-text">"${t.content.substring(0,100)}..."</p>
+          <div class="action-btns" style="margin-top:0.75rem"><button class="btn btn-sm btn-outline" onclick='showTestimonialModal(${JSON.stringify(t).replace(/'/g,"&#39;")})'>Edit</button></div>
+        </div>`).join('')}
+      </div>
+    </div>
+  `;
+}
+
+window.showTestimonialModal = function(t = null) {
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay';
+  modal.id = 'testimonial-modal';
+  modal.innerHTML = `
+    <div class="modal glass-card">
+      <div class="modal-header"><h2 class="modal-title">${t ? 'Edit' : 'Add'} Testimonial</h2><button class="modal-close" onclick="document.getElementById('testimonial-modal').remove()">✕</button></div>
+      <div class="modal-body">
+        <div class="form-group"><label class="form-label">Name</label><input type="text" class="form-input" id="t-name" value="${t?.user_name || ''}"></div>
+        <div class="form-group"><label class="form-label">Location</label><input type="text" class="form-input" id="t-location" value="${t?.user_location || ''}"></div>
+        <div class="form-group"><label class="form-label">Avatar URL</label><input type="url" class="form-input" id="t-avatar" value="${t?.user_avatar || ''}"></div>
+        <div class="form-group"><label class="form-label">Rating (1-5)</label><input type="number" class="form-input" id="t-rating" value="${t?.rating || 5}" min="1" max="5"></div>
+        <div class="form-group"><label class="form-label">Review Text</label><textarea class="form-input" id="t-content" rows="4">${t?.content || ''}</textarea></div>
+        <div class="form-group"><label class="form-check"><input type="checkbox" id="t-verified" ${t?.is_verified ? 'checked' : ''}><span>Mark as Verified</span></label></div>
+        <button class="btn btn-primary w-full btn-lg" onclick="saveTestimonial('${t?.id || ''}')">Save Review</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+};
+
+window.saveTestimonial = async function(id) {
+  const t = { id: id || undefined, user_name: document.getElementById('t-name').value.trim(), user_location: document.getElementById('t-location').value.trim(), user_avatar: document.getElementById('t-avatar').value.trim(), rating: parseInt(document.getElementById('t-rating').value), content: document.getElementById('t-content').value.trim(), is_verified: document.getElementById('t-verified').checked, is_active: true };
+  if (!t.user_name || !t.content) { Toast.show('Name and review required', 'warning'); return; }
+  const { error } = await DB.saveTestimonial(t);
+  if (error) { Toast.show('Failed: ' + error.message, 'error'); return; }
+  document.getElementById('testimonial-modal').remove();
+  Toast.show('Testimonial saved!', 'success');
+  switchAdminTab('testimonials', document.querySelectorAll('.admin-tab')[5]);
+};
+
+async function renderAdminDeposits(container) {
+  const { data: deposits } = await supabaseClient.from('deposits')
+    .select('*, users(full_name, email)')
+    .order('created_at', { ascending: false });
+
+  container.innerHTML = `
+    <div>
+      <div class="admin-section-header"><h2 class="card-title">Deposits (${deposits?.length || 0})</h2></div>
+      <div style="display:flex;flex-direction:column;gap:0.75rem">
+        ${(deposits || []).map(d => `
+        <div class="glass-card" style="padding:1rem">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:0.75rem">
+            <div>
+              <div style="font-weight:700;font-size:0.875rem">${d.users?.full_name || d.users?.email || 'N/A'}</div>
+              <div style="font-size:0.75rem;color:var(--text-2);margin-top:0.2rem;font-family:var(--mono)">UTR: ${d.utr}</div>
+              <div style="font-size:0.7rem;color:var(--text-3);margin-top:0.1rem">${Utils.formatDateTime(d.created_at)}</div>
+            </div>
+            <div style="text-align:right">
+              <div style="font-size:1rem;font-weight:800;font-family:var(--mono)">${Utils.formatCurrency(d.amount)}</div>
+              <div style="margin-top:0.25rem">${Utils.statusBadge(d.status)}</div>
+            </div>
+          </div>
+          ${d.status === 'pending' ? `
+          <div style="display:flex;gap:0.5rem">
+            <button class="btn btn-success btn-sm" style="flex:1" onclick="approveDeposit('${d.id}','${d.user_id}',${d.amount})">✓ Approve & Credit</button>
+            <button class="btn btn-danger btn-sm" style="flex:1" onclick="rejectDeposit('${d.id}')">✕ Reject</button>
+          </div>` : d.admin_note ? `<div style="font-size:0.72rem;color:var(--text-3);font-style:italic">Note: ${d.admin_note}</div>` : ''}
+        </div>`).join('')}
+      </div>
+    </div>
+  `;
+}
+
+window.approveDeposit = async function(depositId, userId, amount) {
+  if (!confirm(`Credit ₹${amount} to this user's wallet?`)) return;
+
+  // Credit wallet
+  const { data, error } = await supabaseClient.rpc('credit_wallet', {
+    p_user_id: userId,
+    p_amount: amount,
+    p_type: 'deposit',
+    p_description: `Wallet deposit of ${Utils.formatCurrency(amount)}`,
+    p_reference_id: depositId,
+    p_reference_type: 'deposit'
+  });
+
+  if (error || !data?.success) {
+    Toast.show('Failed to credit wallet: ' + (data?.error || error?.message), 'error');
+    return;
+  }
+
+  // Mark approved
+  await supabaseClient.from('deposits').update({
+    status: 'approved',
+    processed_at: new Date().toISOString(),
+    admin_note: 'Verified and credited'
+  }).eq('id', depositId);
+
+  Toast.show('Wallet credited successfully!', 'success');
+  switchAdminTab('deposits', document.querySelectorAll('.admin-tab')[5]);
+};
+
+window.rejectDeposit = async function(depositId) {
+  const reason = prompt('Rejection reason:') || 'Invalid UTR';
+  await supabaseClient.from('deposits').update({
+    status: 'rejected',
+    processed_at: new Date().toISOString(),
+    admin_note: reason
+  }).eq('id', depositId);
+  Toast.show('Deposit rejected', 'info');
+  switchAdminTab('deposits', document.querySelectorAll('.admin-tab')[5]);
+};
+
+async function renderAdminUPI(container) {
+  const { data: accounts } = await supabaseClient.from('upi_accounts').select('*').order('created_at', { ascending: false });
+
+  container.innerHTML = `
+    <div>
+      <div class="admin-section-header">
+        <h2 class="card-title">UPI Accounts (${accounts?.length || 0})</h2>
+        <button class="btn btn-primary" onclick="showUPIModal()">+ Add UPI</button>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:0.75rem">
+        ${(accounts || []).map(a => `
+        <div class="glass-card" style="padding:1rem;display:flex;align-items:center;gap:1rem">
+          <img src="${a.qr_url}" style="width:60px;height:60px;border-radius:8px;object-fit:contain;background:white;padding:4px;flex-shrink:0" onerror="this.style.display='none'">
+          <div style="flex:1;min-width:0">
+            <div style="font-weight:700;font-size:0.875rem">${a.name}</div>
+            <div style="font-size:0.8rem;color:var(--accent);font-family:var(--mono);margin-top:0.2rem">${a.upi_id}</div>
+          </div>
+          ${a.is_active ? '<span class="badge badge-success">Active</span>' : '<span class="badge badge-danger">Inactive</span>'}
+          <div style="display:flex;gap:0.5rem;flex-shrink:0">
+            <button class="btn btn-outline btn-sm" onclick='showUPIModal(${JSON.stringify(a).replace(/'/g,"&#39;")})'>Edit</button>
+            <button class="btn btn-danger btn-sm" onclick="toggleUPI('${a.id}',${a.is_active})">${a.is_active ? 'Disable' : 'Enable'}</button>
+          </div>
+        </div>`).join('')}
+      </div>
+    </div>
+  `;
+}
+
+
+
+
+window.showUPIModal = function(account = null) {
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay';
+  modal.id = 'upi-modal';
+  modal.innerHTML = `
+    <div class="modal glass-card">
+      <div class="modal-header">
+        <h2 class="modal-title">${account ? 'Edit' : 'Add'} UPI Account</h2>
+        <button class="modal-close" onclick="document.getElementById('upi-modal').remove()">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label class="form-label">Display Name</label>
+          <input type="text" class="form-input" id="upi-name" value="${account?.name || ''}" placeholder="e.g. CashX Payments">
+        </div>
+        <div class="form-group">
+          <label class="form-label">UPI ID</label>
+          <input type="text" class="form-input" id="upi-id-val" value="${account?.upi_id || ''}" placeholder="cashx@upi">
+        </div>
+        <div class="form-group">
+          <label class="form-label">QR Code Image</label>
+          <div id="qr-preview" style="margin-bottom:0.75rem;${account?.qr_url ? '' : 'display:none'}">
+            <img id="qr-preview-img" src="${account?.qr_url || ''}" style="width:120px;height:120px;object-fit:contain;background:white;padding:6px;border-radius:8px;border:1px solid var(--border)">
+          </div>
+          <input type="file" id="upi-qr-file" accept="image/*" style="display:none" onchange="previewQR(this)">
+          <button type="button" class="btn btn-outline w-full" onclick="document.getElementById('upi-qr-file').click()">
+            📁 ${account?.qr_url ? 'Change QR Image' : 'Upload QR Image'}
+          </button>
+          <input type="hidden" id="upi-qr-url" value="${account?.qr_url || ''}">
+          <div id="qr-upload-status" style="font-size:0.75rem;color:var(--text-2);margin-top:0.4rem;text-align:center"></div>
+        </div>
+        <button class="btn btn-primary w-full btn-lg" id="upi-save-btn" onclick="saveUPI('${account?.id || ''}')">Save</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+};
+
+window.previewQR = async function(input) {
+  const file = input.files[0];
+  if (!file) return;
+
+  const status = document.getElementById('qr-upload-status');
+  const preview = document.getElementById('qr-preview');
+  const previewImg = document.getElementById('qr-preview-img');
+
+  status.textContent = 'Uploading...';
+
+  const ext = file.name.split('.').pop();
+  const fileName = `qr_${Date.now()}.${ext}`;
+
+  const { data, error } = await supabaseClient.storage
+    .from('qr-codes')
+    .upload(fileName, file, { upsert: true });
+
+  if (error) {
+    status.textContent = 'Upload failed: ' + error.message;
+    status.style.color = 'var(--danger)';
+    return;
+  }
+
+  const { data: urlData } = supabaseClient.storage.from('qr-codes').getPublicUrl(fileName);
+  const publicUrl = urlData.publicUrl;
+
+  document.getElementById('upi-qr-url').value = publicUrl;
+  previewImg.src = publicUrl;
+  preview.style.display = 'block';
+  status.textContent = '✓ Uploaded successfully';
+  status.style.color = 'var(--success)';
+};
+
+window.saveUPI = async function(id) {
+  const name = document.getElementById('upi-name').value.trim();
+  const upiId = document.getElementById('upi-id-val').value.trim();
+  const qrUrl = document.getElementById('upi-qr-url').value.trim();
+
+  if (!name || !upiId) { Toast.show('Name and UPI ID required', 'warning'); return; }
+  if (!qrUrl) { Toast.show('Please upload a QR image', 'warning'); return; }
+
+  const btn = document.getElementById('upi-save-btn');
+  btn.disabled = true; btn.textContent = 'Saving...';
+
+  if (id) {
+    await supabaseClient.from('upi_accounts').update({ name, upi_id: upiId, qr_url: qrUrl }).eq('id', id);
+  } else {
+    await supabaseClient.from('upi_accounts').insert({ name, upi_id: upiId, qr_url: qrUrl });
+  }
+
+  document.getElementById('upi-modal').remove();
+  Toast.show('UPI account saved!', 'success');
+  switchAdminTab('upi', document.querySelectorAll('.admin-tab')[6]);
+};
+
+window.toggleUPI = async function(id, currentState) {
+  await supabaseClient.from('upi_accounts').update({ is_active: !currentState }).eq('id', id);
+  Toast.show(`UPI account ${currentState ? 'disabled' : 'enabled'}`, 'info');
+  switchAdminTab('upi', document.querySelectorAll('.admin-tab')[6]);
+};
+
+window.handleReferralBonus = async function(orderId, amount) {
+  try {
+    // Check if this user was referred and bonus not yet paid
+    const { data: referral } = await supabaseClient
+      .from('referrals')
+      .select('*')
+      .eq('referred_id', Auth.currentUser.id)
+      .eq('bonus_paid', false)
+      .single();
+
+    if (!referral) return;
+
+    // Calculate bonus based on plan price
+const getReferralBonus = (price) => {
+  if (price >= 12000) return 600;
+  if (price >= 7500) return 350;
+  if (price >= 5000) return 250;
+  if (price >= 1500) return 170;
+  if (price >= 600) return 50;
+  return 0;
+};
+const bonus = getReferralBonus(amount);
+if (bonus <= 0) return;
+
+// Pay bonus to referrer
+await supabaseClient.rpc('credit_wallet', {
+  p_user_id: referral.referrer_id,
+  p_amount: bonus,
+  p_type: 'bonus',
+  p_description: `Referral bonus ₹${bonus} — your friend purchased a ₹${amount} plan!`,
+      p_reference_id: orderId,
+      p_reference_type: 'referral'
+    });
+
+    // Mark bonus paid and link order
+    await supabaseClient.from('referrals').update({
+      bonus_paid: true,
+      order_id: orderId
+    }).eq('id', referral.id);
+
+  } catch(e) {}
+};
+
+window.shareReferral = function(code) {
+  const link = `${window.location.origin}${window.location.pathname}#login?ref=${code}`;
+  if (navigator.share) {
+    navigator.share({
+      title: 'Join CashX — Earn Daily Cashback',
+      text: `Join CashX and earn 5% daily cashback on your investment! Use my referral code ${code} to get started.`,
+      url: link
+    });
+  } else {
+    navigator.clipboard.writeText(link).then(() => Toast.show('Referral link copied!', 'success'));
+  }
+};
+
+// ============================================================
+// INIT
+// ============================================================
+window.addEventListener('hashchange', () => Router.handleRoute());
+window.addEventListener('load', async () => {
+  // Show global spinner while auth loads
+  document.getElementById('app').innerHTML = `
+    <div style="min-height:100vh;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:1rem">
+      <div style="width:48px;height:48px;background:linear-gradient(135deg,#6366f1,#22d3ee);border-radius:12px;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:1.4rem;color:white">₹</div>
+      <div class="spinner"></div>
+    </div>
+  `;
+
+  // Handle password reset redirect
+if (window.location.hash.includes('type=recovery')) {
+  window.location.hash = 'reset';
+}
+  await Auth.init();
+  await Router.handleRoute();
+});
+// ============================================================
+// DEPOSIT FLOW (UPI + UTR)
+// ============================================================
+window.showDepositModal = async function() {
+  const existing = document.getElementById('deposit-modal');
+  if (existing) existing.remove();
+
+  // Load active UPI accounts
+  let upiAccounts = [];
+  try {
+    const { data } = await supabaseClient.from('upi_accounts').select('*').eq('is_active', true);
+    upiAccounts = data || [];
+  } catch(e) {}
+
+  if (!upiAccounts.length) {
+    Toast.show('No UPI accounts configured. Contact admin.', 'error');
+    return;
+  }
+
+  // Pick a random one to distribute load
+  const selected = upiAccounts[Math.floor(Math.random() * upiAccounts.length)];
+
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay';
+  modal.id = 'deposit-modal';
+  modal.innerHTML = `
+    <div class="modal glass-card">
+      <div class="modal-header">
+        <h2 class="modal-title">💳 Deposit Money</h2>
+        <button class="modal-close" onclick="document.getElementById('deposit-modal').remove()">✕</button>
+      </div>
+      <div class="modal-body">
+
+        <div style="text-align:center;margin-bottom:1.25rem">
+          <div style="font-size:0.75rem;color:var(--text-2);margin-bottom:0.5rem;font-weight:600;text-transform:uppercase;letter-spacing:0.05em">Scan & Pay</div>
+          <img src="${selected.qr_url}" alt="UPI QR" style="width:180px;height:180px;border-radius:var(--radius-sm);border:2px solid var(--border);margin:0 auto;display:block;object-fit:contain;background:white;padding:8px">
+          <div style="margin-top:0.75rem;font-size:0.875rem;font-weight:700;color:var(--text)">${selected.name}</div>
+          <div style="font-size:0.8rem;color:var(--accent);font-family:var(--mono);margin-top:0.2rem">${selected.upi_id}</div>
+          <button onclick="navigator.clipboard.writeText('${selected.upi_id}').then(()=>Toast.show('UPI ID copied!','success'))" style="margin-top:0.5rem;font-size:0.72rem;color:var(--text-2);background:rgba(255,255,255,0.05);border:1px solid var(--border);border-radius:4px;padding:0.25rem 0.6rem;cursor:pointer">Copy UPI ID</button>
+        </div>
+
+        <div style="background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.2);border-radius:var(--radius-sm);padding:0.75rem;font-size:0.75rem;color:var(--text-2);margin-bottom:1.25rem;line-height:1.6">
+          ⚠️ After paying, enter the exact amount and UTR number from your UPI app. Your wallet will be credited after admin verification.
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Amount Paid (₹)</label>
+          <input type="number" class="form-input" id="deposit-amount" placeholder="Min ₹600" min="600">
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">UTR / Transaction Reference Number</label>
+          <input type="text" class="form-input" id="deposit-utr" placeholder="12-digit UTR number" maxlength="30" style="font-family:var(--mono);letter-spacing:0.05em">
+          <div style="font-size:0.7rem;color:var(--text-3);margin-top:0.3rem">Find this in your UPI app under transaction details</div>
+        </div>
+
+        <button class="btn btn-primary w-full btn-lg" id="deposit-submit-btn" onclick="submitDeposit('${selected.id}')">
+          Submit for Verification →
+        </button>
+        <p style="text-align:center;font-size:0.72rem;color:var(--text-3);margin-top:0.75rem">Deposits verified within 30 minutes during business hours</p>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+};
+
+window.submitDeposit = async function(upiAccountId) {
+  const amount = parseFloat(document.getElementById('deposit-amount').value);
+  const utr = document.getElementById('deposit-utr').value.trim();
+
+  if (!amount || amount < 600) { Toast.show('Minimum deposit is ₹600', 'warning'); return; }
+  if (!utr || utr.length < 6) { Toast.show('Enter a valid UTR number', 'warning'); return; }
+
+  const btn = document.getElementById('deposit-submit-btn');
+  btn.disabled = true; btn.textContent = 'Submitting...';
+
+  // Check duplicate UTR
+  const { data: existing } = await supabaseClient.from('deposits').select('id').eq('utr', utr).single();
+  if (existing) {
+    Toast.show('This UTR has already been submitted.', 'error');
+    btn.disabled = false; btn.textContent = 'Submit for Verification →';
+    return;
+  }
+
+  const { error } = await supabaseClient.from('deposits').insert({
+    user_id: Auth.currentUser.id,
+    upi_account_id: upiAccountId,
+    amount,
+    utr,
+    status: 'pending'
+  });
+
+  if (error) {
+    Toast.show('Submission failed: ' + error.message, 'error');
+    btn.disabled = false; btn.textContent = 'Submit for Verification →';
+    return;
+  }
+
+  document.getElementById('deposit-modal').remove();
+  Toast.show('Deposit submitted! Wallet will be credited after verification 🎉', 'success');
+};
+window.showForgotPassword = function() {
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay';
+  modal.id = 'forgot-modal';
+  modal.innerHTML = `
+    <div class="modal glass-card">
+      <div class="modal-header">
+        <h2 class="modal-title">Reset Password</h2>
+        <button class="modal-close" onclick="document.getElementById('forgot-modal').remove()">✕</button>
+      </div>
+      <div class="modal-body">
+        <p style="font-size:0.875rem;color:var(--text-2);margin-bottom:1.25rem">
+          Enter your email and we'll send you a password reset link.
+        </p>
+        <div class="form-group">
+          <label class="form-label">Email Address</label>
+          <input type="email" class="form-input" id="reset-email" placeholder="you@example.com">
+        </div>
+        <button class="btn btn-primary w-full btn-lg" id="reset-btn" onclick="sendPasswordReset()">
+          Send Reset Link →
+        </button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+};
+
+window.sendPasswordReset = async function() {
+  const email = document.getElementById('reset-email').value.trim();
+  if (!email) { Toast.show('Enter your email', 'warning'); return; }
+
+  const btn = document.getElementById('reset-btn');
+  btn.disabled = true; btn.textContent = 'Sending...';
+
+  const { error } = await supabaseClient.auth.resetPasswordForEmail(email, {
+    redirectTo: window.location.origin + window.location.pathname + '#reset'
+  });
+
+  if (error) {
+    Toast.show(error.message, 'error');
+    btn.disabled = false; btn.textContent = 'Send Reset Link →';
+    return;
+  }
+
+  document.getElementById('forgot-modal').remove();
+  Toast.show('Reset link sent! Check your email 📧', 'success');
+};
+
+// When user comes back to the tab, refresh everything
+document.addEventListener('visibilitychange', async () => {
+  if (document.visibilityState === 'visible') {
+    // Refresh session
+    const { data: { session } } = await supabaseClient.auth.getSession();
+    if (session) {
+      await supabaseClient.auth.refreshSession();
+      await Auth.loadProfile();
+      
+      // Re-render current page to restart timers
+      const route = window.location.hash.replace('#', '') || 'landing';
+      const renderFn = Router.routes[route];
+      if (renderFn && window[renderFn] && Auth.isLoggedIn()) {
+        await window[renderFn]();
+      }
+    }
+  }
+});
+</script>
+</body>
+</html><!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#050b18">
+<title>CashX — Earn While You Sleep</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="icon" type="image/png" href="favicon.png">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+<link href="https://fonts.googleapis.com/css2?family=Sora:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style>
+/* ============================================================
+   CSS VARIABLES & RESET
+   ============================================================ */
+:root {
+  --bg: #050b18;
+  --bg-2: #070f1f;
+  --bg-3: #0a1628;
+  --surface: rgba(255,255,255,0.04);
+  --surface-hover: rgba(255,255,255,0.07);
+  --border: rgba(255,255,255,0.08);
+  --border-bright: rgba(255,255,255,0.15);
+  --primary: #6366f1;
+  --primary-light: #818cf8;
+  --primary-dark: #4f46e5;
+  --accent: #22d3ee;
+  --accent-dark: #06b6d4;
+  --success: #22c55e;
+  --danger: #ef4444;
+  --warning: #f59e0b;
+  --text: #f1f5f9;
+  --text-2: #94a3b8;
+  --text-3: #64748b;
+  --glass: rgba(255,255,255,0.05);
+  --glass-border: rgba(255,255,255,0.1);
+  --glass-hover: rgba(255,255,255,0.08);
+  --sidebar-w: 260px;
+--topbar-h: 60px;
+--bottom-nav-h: 68px;
+--safe-bottom: env(safe-area-inset-bottom, 0px);
+--touch-min: 48px;
+  --shadow: 0 4px 24px rgba(0,0,0,0.4);
+  --shadow-lg: 0 8px 48px rgba(0,0,0,0.6);
+  --glow: 0 0 40px rgba(99,102,241,0.2);
+  --radius: 16px;
+  --radius-sm: 8px;
+  --radius-lg: 24px;
+  --font: 'Sora', sans-serif;
+  --mono: 'JetBrains Mono', monospace;
+}
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html { scroll-behavior: smooth; }
+body { font-family: var(--font); background: var(--bg); color: var(--text); min-height: 100vh; overflow-x: hidden; -webkit-font-smoothing: antialiased;-webkit-tap-highlight-color: transparent;}
+
+#app { min-height: 100vh; }
+a { color: inherit; text-decoration: none; }
+button { cursor: pointer; border: none; background: none; font-family: var(--font); }
+input, textarea, select { font-family: var(--font); }
+img { display: block; }
+
+/* ============================================================
+   GLASS COMPONENTS
+   ============================================================ */
+.glass-card { background: var(--glass); border: 1px solid var(--glass-border); border-radius: var(--radius); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); }
+.glass-card-inner { background: rgba(255,255,255,0.03); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 1rem; }
+.glass-nav { background: rgba(5,11,24,0.85); border-bottom: 1px solid var(--border); backdrop-filter: blur(20px); }
+
+/* ============================================================
+   TYPOGRAPHY
+   ============================================================ */
+.gradient-text { background: linear-gradient(135deg, var(--primary-light), var(--accent)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
+.text-success { color: var(--success) !important; }
+.text-danger { color: var(--danger) !important; }
+.text-warning { color: var(--warning) !important; }
+.text-muted { color: var(--text-3); font-size: 0.8rem; }
+.accent { color: var(--accent); }
+.text-center { text-align: center; }
+
+/* ============================================================
+   BUTTONS
+   ============================================================ */
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 0.5rem; padding: 0.625rem 1.25rem; border-radius: var(--radius-sm); font-weight: 600; font-size: 0.875rem; transition: all 0.2s ease; cursor: pointer; white-space: nowrap; }
+.btn-primary { background: linear-gradient(135deg, var(--primary), var(--primary-dark)); color: white; box-shadow: 0 4px 20px rgba(99,102,241,0.35); }
+.btn-primary:hover { transform: translateY(-1px); box-shadow: 0 6px 28px rgba(99,102,241,0.5); }
+.btn-primary:active { transform: scale(0.97); box-shadow: 0 2px 10px rgba(99,102,241,0.3); }
+.btn-primary:active { transform: translateY(0); }
+.btn-primary:disabled { opacity: 0.6; transform: none; }
+.btn-outline { background: transparent; color: var(--text); border: 1px solid var(--border-bright); }
+.btn-outline:hover { background: var(--surface-hover); border-color: var(--primary-light); }
+.btn-outline-danger { background: transparent; color: var(--danger); border: 1px solid var(--danger); }
+.btn-outline-danger:hover { background: rgba(239,68,68,0.1); }
+.btn-success { background: var(--success); color: white; }
+.btn-danger { background: var(--danger); color: white; font-size: 0.75rem; padding: 0.4rem 0.75rem; }
+.btn-lg { padding: 0.875rem 1.75rem; font-size: 1rem; }
+.btn-xl { padding: 1rem 2rem; font-size: 1.05rem; border-radius: var(--radius-sm); }
+.btn-sm { padding: 0.4rem 0.75rem; font-size: 0.75rem; }
+.btn-arrow { transition: transform 0.2s; }
+.btn:hover .btn-arrow { transform: translateX(4px); }
+.w-full { width: 100%; }
+
+/* ============================================================
+   FORMS
+   ============================================================ */
+.form-group { display: flex; flex-direction: column; gap: 0.4rem; margin-bottom: 1rem; }
+.form-label { font-size: 0.8rem; font-weight: 600; color: var(--text-2); text-transform: uppercase; letter-spacing: 0.05em; }
+.form-input { background: rgba(255,255,255,0.05); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 0.75rem 1rem; color: var(--text); font-size: 16px; transition: all 0.2s; outline: none; width: 100%; }
+.form-input:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(99,102,241,0.15); }
+.form-input::placeholder { color: var(--text-3); }
+.form-input[readonly] { cursor: default; }
+.form-select { background: rgba(255,255,255,0.05); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 0.5rem 1rem; color: var(--text); font-size: 16px; cursor: pointer; }
+.form-check { display: flex; align-items: center; gap: 0.5rem; cursor: pointer; }
+.form-check input { accent-color: var(--primary); }
+.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+.form-full { grid-column: 1 / -1; }
+.phone-input-group { display: flex; gap: 0.5rem; align-items: center; }
+.phone-prefix { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 0.75rem; color: var(--text-2); white-space: nowrap; }
+.phone-input { flex: 1; }
+.otp-input { text-align: center; letter-spacing: 0.5em; font-size: 1.2rem; font-family: var(--mono); }
+
+/* ============================================================
+   BADGES
+   ============================================================ */
+.badge { display: inline-flex; align-items: center; gap: 0.25rem; padding: 0.2rem 0.6rem; border-radius: 100px; font-size: 0.7rem; font-weight: 700; letter-spacing: 0.02em; white-space: nowrap; }
+.badge-success { background: rgba(34,197,94,0.15); color: var(--success); border: 1px solid rgba(34,197,94,0.3); }
+.badge-danger { background: rgba(239,68,68,0.15); color: var(--danger); border: 1px solid rgba(239,68,68,0.3); }
+.badge-warning { background: rgba(245,158,11,0.15); color: var(--warning); border: 1px solid rgba(245,158,11,0.3); }
+.badge-info { background: rgba(34,211,238,0.15); color: var(--accent); border: 1px solid rgba(34,211,238,0.3); }
+.badge-purple { background: rgba(99,102,241,0.15); color: var(--primary-light); border: 1px solid rgba(99,102,241,0.3); }
+.count-badge { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; background: var(--primary); color: white; border-radius: 50%; font-size: 0.75rem; font-weight: 700; }
+
+/* ============================================================
+   ANIMATIONS
+   ============================================================ */
+@keyframes fadeInUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes float { 0%, 100% { transform: translateY(0px) rotate(2deg); } 50% { transform: translateY(-12px) rotate(-1deg); } }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes orbPulse { 0%, 100% { transform: scale(1); opacity: 0.3; } 50% { transform: scale(1.1); opacity: 0.5; } }
+.animate-in { animation: fadeInUp 0.5s ease forwards; opacity: 0; }
+.animate-float { animation: float 6s ease-in-out infinite; }
+.hover-lift { transition: transform 0.2s ease, box-shadow 0.2s ease; }
+.hover-lift:hover { transform: translateY(-4px); box-shadow: var(--shadow-lg); }
+
+/* ============================================================
+   SPINNER
+   ============================================================ */
+.spinner { width: 40px; height: 40px; border: 3px solid var(--border); border-top-color: var(--primary); border-radius: 50%; animation: spin 0.8s linear infinite; }
+.loading-state { display: flex; align-items: center; justify-content: center; min-height: 200px; }
+
+/* ============================================================
+   TOAST
+   ============================================================ */
+#toast-container { position: fixed; bottom: calc(68px + env(safe-area-inset-bottom) + 1rem); left: 1rem; right: 1rem; z-index: 9999; display: flex; flex-direction: column-reverse; gap: 0.5rem; }
+@media (min-width: 768px) {
+  #toast-container { bottom: auto; top: 1.5rem; right: 1.5rem; left: auto; max-width: 360px; }
+}
+   .toast { display: flex; align-items: center; gap: 0.75rem; padding: 0.875rem 1.25rem; background: #1e293b; border: 1px solid var(--border-bright); border-radius: var(--radius-sm); color: var(--text); font-size: 0.875rem; font-weight: 500; box-shadow: var(--shadow); transform: translateX(120%); transition: transform 0.3s ease; backdrop-filter: blur(20px); }
+.toast.show { transform: translateX(0); }
+.toast-icon { font-size: 1rem; font-weight: 800; }
+.toast-success { border-left: 3px solid var(--success); }
+.toast-error { border-left: 3px solid var(--danger); }
+.toast-warning { border-left: 3px solid var(--warning); }
+.toast-info { border-left: 3px solid var(--accent); }
+
+/* ============================================================
+   LANDING PAGE
+   ============================================================ */
+.landing-page { min-height: 100vh; overflow-x: hidden; }
+.landing-nav { position: sticky; top: 0; z-index: 100; display: flex; align-items: center; justify-content: space-between; padding: 1rem 2rem; }
+.nav-brand { display: flex; align-items: center; gap: 0.5rem; cursor: pointer; }
+.brand-logo { width: 36px; height: 36px; background: linear-gradient(135deg, var(--primary), var(--accent)); border-radius: var(--radius-sm); display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 1.1rem; color: white; }
+.brand-logo.small { width: 28px; height: 28px; font-size: 0.9rem; }
+.brand-name { font-size: 1.3rem; font-weight: 800; letter-spacing: -0.02em; }
+.nav-links { display: flex; align-items: center; gap: 1.5rem; }
+.nav-link { color: var(--text-2); font-size: 0.875rem; font-weight: 500; transition: color 0.2s; }
+.nav-link:hover { color: var(--text); }
+.mobile-menu-btn { display: none; font-size: 1.5rem; color: var(--text); background: none; border: none; cursor: pointer; }
+.mobile-menu { display: none; flex-direction: column; gap: 1rem; padding: 1.5rem; background: var(--bg-2); border-bottom: 1px solid var(--border); }
+.mobile-menu.open { display: flex; }
+.mobile-link { color: var(--text-2); font-weight: 500; padding: 0.5rem 0; border-bottom: 1px solid var(--border); }
+.hero { position: relative; min-height: 90vh; display: flex; align-items: center; padding: 4rem 2rem; overflow: hidden; }
+.hero-bg { position: absolute; inset: 0; pointer-events: none; }
+.orb { position: absolute; border-radius: 50%; filter: blur(80px); animation: orbPulse 8s ease-in-out infinite; }
+.orb-1 { width: 600px; height: 600px; background: rgba(99,102,241,0.12); top: -20%; left: -10%; }
+.orb-2 { width: 400px; height: 400px; background: rgba(34,211,238,0.08); bottom: -10%; right: 5%; animation-delay: 3s; }
+.orb-3 { width: 300px; height: 300px; background: rgba(99,102,241,0.06); top: 50%; left: 50%; animation-delay: 6s; }
+.orb-4 { width: 500px; height: 500px; background: rgba(99,102,241,0.1); top: -30%; left: 50%; transform: translateX(-50%); }
+.grid-lines { position: absolute; inset: 0; background-image: linear-gradient(rgba(255,255,255,0.02) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.02) 1px, transparent 1px); background-size: 60px 60px; }
+.hero-content { position: relative; z-index: 1; max-width: 650px; }
+.hero-badge { display: inline-flex; align-items: center; gap: 0.5rem; background: rgba(99,102,241,0.12); border: 1px solid rgba(99,102,241,0.25); border-radius: 100px; padding: 0.4rem 0.85rem; font-size: 0.78rem; font-weight: 600; color: var(--primary-light); margin-bottom: 1.5rem; }
+.badge-dot { width: 8px; height: 8px; background: var(--success); border-radius: 50%; animation: pulse 2s ease-in-out infinite; }
+.hero-title { font-size: clamp(2.5rem, 6vw, 4rem); font-weight: 800; line-height: 1.1; letter-spacing: -0.03em; margin-bottom: 1.25rem; }
+.hero-subtitle { font-size: 1.1rem; color: var(--text-2); line-height: 1.7; margin-bottom: 2rem; max-width: 520px; }
+.hero-actions { display: flex; align-items: center; gap: 1.5rem; flex-wrap: wrap; margin-bottom: 3rem; }
+.hero-stat-inline { display: flex; align-items: center; gap: 0.5rem; font-size: 0.85rem; color: var(--text-2); }
+.pulse-dot { width: 8px; height: 8px; background: var(--success); border-radius: 50%; animation: pulse 1.5s ease infinite; }
+.hero-stats { display: flex; align-items: center; gap: 2rem; flex-wrap: wrap; }
+.hero-stat-value { font-size: 1.5rem; font-weight: 800; letter-spacing: -0.02em; }
+.hero-stat-label { font-size: 0.75rem; color: var(--text-2); margin-top: 0.15rem; }
+.stat-divider { width: 1px; height: 40px; background: var(--border); }
+.floating-card { position: absolute; right: 8%; top: 50%; transform: translateY(-50%) rotate(2deg); padding: 1.5rem; width: 220px; }
+.fc-header { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 1rem; }
+.fc-icon { font-size: 1.2rem; }
+.fc-title { font-weight: 700; font-size: 0.85rem; flex: 1; }
+.fc-badge { background: rgba(34,197,94,0.2); color: var(--success); border: 1px solid rgba(34,197,94,0.3); border-radius: 4px; font-size: 0.65rem; font-weight: 800; padding: 0.1rem 0.35rem; animation: pulse 2s ease infinite; }
+.fc-amount { font-size: 2rem; font-weight: 800; color: var(--success); letter-spacing: -0.02em; }
+.fc-user { font-size: 0.75rem; color: var(--text-2); margin-top: 0.4rem; }
+.fc-time { font-size: 0.7rem; color: var(--text-3); margin-top: 0.15rem; }
+.section { padding: 5rem 2rem; max-width: 1200px; margin: 0 auto; }
+.section-dark { background: var(--bg-2); max-width: 100%; padding: 5rem 2rem; }
+.section-dark > * { max-width: 1200px; margin: 0 auto; }
+.section-header { text-align: center; margin-bottom: 3rem; }
+.section-tag { display: inline-block; background: rgba(99,102,241,0.12); border: 1px solid rgba(99,102,241,0.25); color: var(--primary-light); border-radius: 100px; padding: 0.3rem 0.85rem; font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 1rem; }
+.section-title { font-size: clamp(1.8rem, 4vw, 2.5rem); font-weight: 800; letter-spacing: -0.02em; margin-bottom: 0.75rem; }
+.section-sub { color: var(--text-2); font-size: 1rem; max-width: 500px; margin: 0 auto; }
+.features-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.5rem; }
+.feature-card { padding: 1.75rem; }
+.feature-icon { font-size: 2rem; margin-bottom: 1rem; }
+.feature-title { font-size: 1rem; font-weight: 700; margin-bottom: 0.5rem; }
+.feature-desc { font-size: 0.875rem; color: var(--text-2); line-height: 1.6; }
+.products-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1.5rem; max-width: 1100px; margin: 0 auto; }
+.product-card { padding: 2rem; position: relative; overflow: hidden; }
+.product-featured { border-color: var(--primary); box-shadow: var(--glow); }
+.product-popular-badge { position: absolute; top: 0; right: 0; background: linear-gradient(135deg, var(--primary), var(--accent)); color: white; font-size: 0.7rem; font-weight: 700; padding: 0.3rem 0.85rem; border-radius: 0 var(--radius) 0 var(--radius); }
+.product-name { font-size: 1.1rem; font-weight: 700; margin-bottom: 0.5rem; }
+.product-price { font-size: 2rem; font-weight: 800; letter-spacing: -0.03em; margin-bottom: 0.25rem; }
+.product-rate { font-size: 0.8rem; color: var(--text-2); margin-bottom: 1.5rem; }
+.product-returns { background: rgba(255,255,255,0.03); border-radius: var(--radius-sm); padding: 1rem; margin-bottom: 1.5rem; display: flex; flex-direction: column; gap: 0.5rem; }
+.product-return-item { display: flex; justify-content: space-between; font-size: 0.875rem; }
+.product-features { list-style: none; margin-bottom: 1.5rem; display: flex; flex-direction: column; gap: 0.5rem; }
+.product-features li { font-size: 0.8rem; color: var(--text-2); display: flex; gap: 0.4rem; }
+.steps-container { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 2rem; }
+.step-card { text-align: center; padding: 2rem; }
+.step-number { font-family: var(--mono); font-size: 3rem; font-weight: 800; color: var(--border-bright); line-height: 1; margin-bottom: 0.75rem; }
+.step-icon { font-size: 2rem; margin-bottom: 1rem; }
+.step-title { font-size: 1rem; font-weight: 700; margin-bottom: 0.5rem; }
+.step-desc { font-size: 0.875rem; color: var(--text-2); line-height: 1.6; }
+.testimonials-wrapper { overflow: hidden; padding: 1rem 0; }
+.testimonials-track { display: flex; gap: 1.5rem; width: max-content; }
+.testimonial-card { padding: 1.5rem; width: 340px; flex-shrink: 0; }
+.testimonial-header { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 1rem; }
+.testimonial-avatar { width: 44px; height: 44px; border-radius: 50%; object-fit: cover; }
+.testimonial-name { font-weight: 700; font-size: 0.9rem; display: flex; align-items: center; gap: 0.35rem; }
+.testimonial-location { font-size: 0.75rem; color: var(--text-2); margin-top: 0.1rem; }
+.testimonial-stars { font-size: 0.75rem; margin-left: auto; }
+.testimonial-text { font-size: 0.875rem; color: var(--text-2); line-height: 1.65; font-style: italic; }
+.verified-badge { background: var(--accent); color: white; border-radius: 50%; width: 14px; height: 14px; font-size: 0.55rem; display: inline-flex; align-items: center; justify-content: center; font-style: normal; }
+.cta-section { position: relative; text-align: center; padding: 6rem 2rem; overflow: hidden; }
+.cta-content { position: relative; z-index: 1; }
+.cta-title { font-size: clamp(2rem, 5vw, 3rem); font-weight: 800; letter-spacing: -0.03em; margin-bottom: 1rem; }
+.cta-sub { color: var(--text-2); max-width: 500px; margin: 0 auto 2rem; line-height: 1.7; }
+.cta-trust { display: flex; align-items: center; justify-content: center; gap: 2rem; margin-top: 1.5rem; font-size: 0.8rem; color: var(--text-2); flex-wrap: wrap; }
+.footer { background: var(--bg-2); border-top: 1px solid var(--border); padding: 2.5rem 2rem; text-align: center; display: flex; flex-direction: column; align-items: center; gap: 1rem; }
+.footer-text { font-size: 0.8rem; color: var(--text-3); max-width: 500px; }
+.footer-links { display: flex; gap: 1.5rem; }
+.footer-links a { font-size: 0.8rem; color: var(--text-2); }
+
+/* ============================================================
+   AUTH PAGE
+   ============================================================ */
+.auth-page { min-height: 100vh; display: flex; align-items: center; justify-content: center; position: relative; padding: 2rem; }
+.auth-bg { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+.auth-container { position: relative; z-index: 1; width: 100%; max-width: 420px; }
+.auth-brand { display: flex; align-items: center; justify-content: center; gap: 0.5rem; margin-bottom: 2rem; }
+.auth-card { padding: 2rem; }
+.auth-tabs { display: flex; gap: 0.5rem; margin-bottom: 1.5rem; background: rgba(255,255,255,0.03); border-radius: var(--radius-sm); padding: 0.25rem; }
+.auth-tab { flex: 1; padding: 0.6rem; border-radius: 6px; font-size: 0.875rem; font-weight: 600; color: var(--text-2); transition: all 0.2s; cursor: pointer; }
+.auth-tab.active { background: var(--primary); color: white; }
+.auth-method-toggle { display: flex; gap: 0.5rem; margin-bottom: 1.5rem; }
+.method-btn { flex: 1; padding: 0.6rem; border-radius: var(--radius-sm); font-size: 0.8rem; font-weight: 600; color: var(--text-2); border: 1px solid var(--border); transition: all 0.2s; cursor: pointer; }
+.method-btn.active { border-color: var(--primary); color: var(--primary-light); background: rgba(99,102,241,0.1); }
+.auth-divider { text-align: center; margin: 1.25rem 0 0.75rem; color: var(--text-3); font-size: 0.75rem; }
+.auth-trust { display: flex; justify-content: center; gap: 1.5rem; font-size: 0.75rem; color: var(--text-3); }
+.auth-back { text-align: center; margin-top: 1.25rem; font-size: 0.85rem; color: var(--text-2); }
+.otp-sent-msg { background: rgba(34,197,94,0.1); border: 1px solid rgba(34,197,94,0.2); border-radius: var(--radius-sm); padding: 0.75rem; font-size: 0.8rem; color: var(--text-2); margin-bottom: 1rem; display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+.otp-sent-msg span:first-child { color: var(--success); font-weight: 700; }
+.otp-resend { text-align: center; margin-top: 0.75rem; font-size: 0.8rem; color: var(--text-2); }
+.link-btn { background: none; color: var(--primary-light); font-size: inherit; font-weight: 600; cursor: pointer; text-decoration: underline; border: none; }
+
+/* ============================================================
+   DASHBOARD LAYOUT
+   ============================================================ */
+.dashboard-layout { display: flex; min-height: 100vh; }
+.sidebar { width: 280px; background: var(--bg-2); border-right: 1px solid var(--border); display: flex; flex-direction: column; position: fixed; top: 0; left: 0; height: 100vh; z-index: 200; overflow-y: auto; transition: transform 0.3s cubic-bezier(0.4,0,0.2,1); transform: translateX(-100%); }
+.sidebar.open { transform: translateX(0); box-shadow: 4px 0 32px rgba(0,0,0,0.6); }
+@media (min-width: 1024px) {
+  .sidebar { transform: translateX(0); }
+}
+.sidebar-brand { display: flex; align-items: center; gap: 0.5rem; padding: 1.5rem; border-bottom: 1px solid var(--border); }
+.sidebar-user { display: flex; align-items: center; gap: 0.75rem; padding: 1.25rem 1.5rem; border-bottom: 1px solid var(--border); }
+.sidebar-avatar { width: 40px; height: 40px; background: linear-gradient(135deg, var(--primary), var(--accent)); border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 0.9rem; flex-shrink: 0; }
+.sidebar-user-name { font-weight: 700; font-size: 0.875rem; }
+.sidebar-balance { font-size: 0.75rem; color: var(--success); font-weight: 600; margin-top: 0.1rem; font-family: var(--mono); }
+.sidebar-nav { flex: 1; padding: 1rem; display: flex; flex-direction: column; gap: 0.25rem; }
+.sidebar-link { display: flex; align-items: center; gap: 0.75rem; padding: 0.75rem 1rem; border-radius: var(--radius-sm); color: var(--text-2); font-size: 0.875rem; font-weight: 500; transition: all 0.2s; cursor: pointer; text-align: left; width: 100%; }
+.sidebar-link:hover { color: var(--text); background: var(--surface-hover); }
+.sidebar-link.active { color: white; background: linear-gradient(135deg, var(--primary), var(--primary-dark)); }
+.sl-icon { font-size: 1.05rem; flex-shrink: 0; }
+.sidebar-footer { padding: 1rem; border-top: 1px solid var(--border); }
+.main-content { flex: 1; margin-left: 0; min-height: 100vh; display: flex; flex-direction: column; overflow-x: hidden; max-width: 100vw; }@media (min-width: 1024px) { .main-content { margin-left: 260px; } }
+.topbar { position: sticky; top: 0; z-index: 50; background: rgba(5,11,24,0.9); border-bottom: 1px solid var(--border); backdrop-filter: blur(20px); height: var(--topbar-h); display: flex; align-items: center; gap: 1rem; padding: 0 1rem; overflow: hidden; }
+.topbar-menu-btn { display: flex; align-items: center; justify-content: center; width: 44px; height: 44px; font-size: 1.2rem; color: var(--text); cursor: pointer; border-radius: 8px; }
+@media (min-width: 1024px) { .topbar-menu-btn { display: none; } }
+.topbar-search { flex: 1; min-width: 0; max-width: 200px; }
+.topbar-search-input { background: var(--surface); border: 1px solid var(--border); border-radius: 100px; padding: 0.5rem 0.75rem; color: var(--text); width: 100%; font-size: 0.85rem; outline: none; min-width: 0; }
+.topbar-right { display: flex; align-items: center; gap: 0.75rem; flex-shrink: 0; }
+.topbar-balance { display: none; }
+@media (min-width: 400px) { .topbar-balance { display: flex; flex-direction: column; align-items: flex-end; } }
+.topbar-balance-label { font-size: 0.65rem; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.05em; }
+.topbar-balance-val { font-size: 0.875rem; font-weight: 700; color: var(--success); font-family: var(--mono); }
+.topbar-avatar { width: 36px; height: 36px; background: linear-gradient(135deg, var(--primary), var(--accent)); border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 0.8rem; cursor: pointer; }
+.page-content { padding: 1rem 0.75rem calc(80px + env(safe-area-inset-bottom)); flex: 1; overflow-x: hidden; box-sizing: border-box; width: 100%; }
+
+@media (min-width: 1024px) {
+  .page-content { padding: 2rem 1.5rem 3rem; }
+}
+@media (min-width: 1024px) { .page-content { padding: 2rem 1.5rem 3rem; } }
+.page-header { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 2rem; flex-wrap: wrap; gap: 1rem; }
+.page-title { font-size: 1.75rem; font-weight: 800; letter-spacing: -0.02em; display: flex; align-items: center; gap: 0.5rem; }
+.page-sub { color: var(--text-2); font-size: 0.875rem; margin-top: 0.25rem; }
+.header-actions { display: flex; align-items: center; gap: 0.75rem; }
+.stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.875rem; margin-bottom: 1.25rem; }
+@media (min-width: 1024px) { .stats-grid { grid-template-columns: repeat(4, 1fr); gap: 1.25rem; } }
+.stat-card { padding: 1rem; display: flex; align-items: center; gap: 0.75rem; overflow: hidden; }
+.stat-value { font-size: 1.2rem; font-weight: 800; letter-spacing: -0.02em; margin: 0.15rem 0; font-family: var(--mono); word-break: break-all; }
+.stat-icon { font-size: 2rem; flex-shrink: 0; }
+.stat-label { font-size: 0.75rem; font-weight: 600; color: var(--text-2); text-transform: uppercase; letter-spacing: 0.05em; }
+.stat-value { font-size: clamp(1rem, 4vw, 1.4rem); font-weight: 800; letter-spacing: -0.02em; margin: 0.15rem 0; font-family: var(--mono); word-break: break-all; min-width: 0; }
+.stat-change { font-size: 0.75rem; color: var(--text-2); }
+.section-card { padding: 1.5rem; margin-bottom: 1.25rem; }
+.card-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 1.25rem; }
+.card-title { font-size: 1rem; font-weight: 700; }
+.active-orders-list { display: flex; flex-direction: column; gap: 1rem; }
+.order-card { padding: 1.25rem; cursor: pointer; transition: all 0.2s; }
+.order-card:hover { border-color: var(--primary); }
+.order-card-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 1rem; }
+.order-name { font-weight: 700; font-size: 0.9rem; }
+.order-details { display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.75rem; margin-bottom: 1rem; }
+.order-detail { display: flex; flex-direction: column; gap: 0.15rem; }
+.order-detail span { font-size: 0.7rem; color: var(--text-2); }
+.order-detail strong { font-size: 0.85rem; font-family: var(--mono); }
+.order-timer { display: flex; align-items: center; justify-content: space-between; margin-top: 0.75rem; font-size: 0.8rem; }
+.timer-label { color: var(--text-2); }
+.timer-value { font-family: var(--mono); font-weight: 700; color: var(--accent); font-size: 0.9rem; }
+.progress-bar-wrap { height: 4px; background: var(--border); border-radius: 100px; overflow: hidden; }
+.progress-bar { height: 100%; background: linear-gradient(90deg, var(--primary), var(--accent)); border-radius: 100px; transition: width 0.3s; }
+.transactions-list { display: flex; flex-direction: column; gap: 0.5rem; }
+.transaction-item { display: flex; align-items: center; gap: 1rem; padding: 0.875rem; background: rgba(255,255,255,0.02); border-radius: var(--radius-sm); border: 1px solid var(--border); }
+.tx-icon { font-size: 1.25rem; flex-shrink: 0; }
+.tx-info { flex: 1; }
+.tx-desc { font-size: 0.85rem; font-weight: 500; }
+.tx-time { font-size: 0.7rem; color: var(--text-2); margin-top: 0.1rem; }
+.tx-amount { font-weight: 700; font-family: var(--mono); font-size: 0.9rem; }
+.tx-right { display: flex; flex-direction: column; align-items: flex-end; gap: 0.2rem; }
+.tx-balance { font-size: 0.7rem; color: var(--text-3); font-family: var(--mono); }
+.quick-actions { padding: 1.5rem; }
+.qa-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1rem; }
+.qa-btn { display: flex; flex-direction: column; align-items: center; gap: 0.5rem; padding: 1rem; background: rgba(255,255,255,0.03); border-radius: var(--radius-sm); border: 1px solid var(--border); color: var(--text-2); font-size: 0.75rem; font-weight: 600; transition: all 0.2s; cursor: pointer; }
+.qa-btn:hover { border-color: var(--primary); color: var(--primary-light); background: rgba(99,102,241,0.08); }
+.qa-btn span { font-size: 1.5rem; }
+.empty-state { padding: 3rem; text-align: center; display: flex; flex-direction: column; align-items: center; gap: 0.75rem; }
+.empty-icon { font-size: 3rem; }
+.empty-state h3 { font-size: 1.1rem; font-weight: 700; }
+.empty-state p { color: var(--text-2); font-size: 0.875rem; }
+.empty-state-sm { padding: 2rem; text-align: center; color: var(--text-2); font-size: 0.875rem; }
+.empty-text { color: var(--text-3); font-size: 0.875rem; padding: 1rem 0; text-align: center; }
+
+/* ============================================================
+   MOBILE BOTTOM NAV
+   ============================================================ */
+.mobile-bottom-nav { display: none; position: fixed; bottom: 0; left: 0; right: 0; z-index: 100; background: rgba(7,15,31,0.95); border-top: 1px solid var(--border); backdrop-filter: blur(20px); padding: 0.5rem 0 calc(0.5rem + env(safe-area-inset-bottom)); grid-template-columns: repeat(5, 1fr); }
+.mbn-item { display: flex; flex-direction: column; align-items: center; gap: 0.2rem; padding: 0.4rem; color: var(--text-3); font-size: 0.6rem; font-weight: 600; transition: all 0.2s; cursor: pointer; background: none; border: none; }
+.mbn-item.active { color: var(--primary-light); }
+.mbn-icon { font-size: 1.1rem; }
+
+/* ============================================================
+   PRODUCTS PAGE
+   ============================================================ */
+.products-grid { display: grid; grid-template-columns: 1fr; gap: 1.25rem; }
+
+@media (min-width: 640px) {
+  .products-grid { grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); }
+}
+.product-card { overflow: visible; width: 100%; }
+.product-img-wrap { position: relative; aspect-ratio: 16/9; overflow: hidden; }
+.product-img { width: 100%; height: 100%; object-fit: cover; transition: transform 0.3s; }
+.product-card:hover .product-img { transform: scale(1.05); }
+.product-badge { position: absolute; top: 0.75rem; left: 0.75rem; background: linear-gradient(135deg, var(--primary), var(--accent)); color: white; font-size: 0.7rem; font-weight: 800; padding: 0.2rem 0.6rem; border-radius: 100px; }
+.product-body { padding: 1rem; }
+
+@media (min-width: 640px) {
+  .product-body { padding: 1.5rem; }
+}
+.product-name { font-size: 1rem; font-weight: 700; margin-bottom: 0.4rem; }
+.product-desc { font-size: 0.8rem; color: var(--text-2); margin-bottom: 1rem; line-height: 1.5; }
+.product-stats { display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.75rem; margin-bottom: 1rem; background: rgba(255,255,255,0.03); border-radius: var(--radius-sm); padding: 0.875rem; overflow: hidden; }
+.ps-label { font-size: 0.6rem; color: var(--text-2); text-transform: uppercase; letter-spacing: 0.02em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ps-value { font-size: clamp(0.75rem, 3.5vw, 0.9rem); font-weight: 700; font-family: var(--mono); margin-top: 0.15rem; word-break: break-word; min-width: 0; }
+.product-features { list-style: none; margin-bottom: 1rem; display: flex; flex-direction: column; gap: 0.3rem; }
+.product-features li { font-size: 0.78rem; color: var(--text-2); display: flex; align-items: center; gap: 0.4rem; }
+.product-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; }
+
+@media (min-width: 400px) {
+  .product-actions { grid-template-columns: 1fr auto; gap: 0.75rem; }
+}
+
+/* ============================================================
+   CART PAGE
+   ============================================================ */
+.cart-layout { display: grid; grid-template-columns: 1fr 360px; gap: 1.5rem; align-items: start; }
+.cart-items { display: flex; flex-direction: column; gap: 1rem; }
+.cart-item { display: flex; align-items: center; gap: 1.25rem; padding: 1.25rem; }
+.cart-item-img { width: 80px; height: 60px; border-radius: var(--radius-sm); object-fit: cover; flex-shrink: 0; }
+.cart-item-info { flex: 1; }
+.cart-item-name { font-weight: 700; font-size: 0.9rem; margin-bottom: 0.25rem; }
+.cart-item-detail { font-size: 0.75rem; color: var(--text-2); }
+.cart-item-cashback { font-size: 0.8rem; color: var(--success); font-weight: 600; margin-top: 0.25rem; font-family: var(--mono); }
+.cart-item-right { display: flex; flex-direction: column; align-items: flex-end; gap: 0.5rem; flex-shrink: 0; }
+.cart-item-price { font-size: 1.1rem; font-weight: 800; font-family: var(--mono); }
+.cart-summary { padding: 1.5rem; position: sticky; top: calc(var(--topbar-h) + 1.5rem); }
+.summary-title { font-size: 1rem; font-weight: 700; margin-bottom: 1.25rem; }
+.summary-rows { display: flex; flex-direction: column; gap: 0.75rem; margin-bottom: 1.5rem; }
+.summary-row { display: flex; justify-content: space-between; font-size: 0.875rem; }
+.summary-divider { height: 1px; background: var(--border); }
+.summary-total { display: flex; justify-content: space-between; font-size: 1rem; }
+
+/* ============================================================
+   WALLET PAGE
+   ============================================================ */
+.wallet-hero-card { padding: 1rem; margin-bottom: 1.25rem; background: linear-gradient(135deg, rgba(99,102,241,0.1), rgba(34,211,238,0.05)); border: 1px solid rgba(99,102,241,0.2); overflow: hidden; box-sizing: border-box; width: 100%; max-width: 100%; }
+.wallet-balance-section { text-align: center; margin-bottom: 1.5rem; }
+.wallet-label { font-size: 0.75rem; color: var(--text-2); text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 0.5rem; }
+.wallet-amount { font-size: clamp(1.5rem, 7vw, 3rem); font-weight: 800; letter-spacing: -0.03em; font-family: var(--mono); word-break: break-all; }
+.wallet-sub { font-size: 0.75rem; color: var(--text-3); margin-top: 0.25rem; }
+.wallet-actions { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.5rem; margin-bottom: 1.5rem; }
+.wallet-action-btn { display: flex; align-items: center; justify-content: center; gap: 0.4rem; padding: 0.6rem 0.5rem; background: rgba(255,255,255,0.05); border: 1px solid var(--border); border-radius: var(--radius-sm); font-weight: 600; font-size: 0.75rem; color: var(--text); cursor: pointer; transition: all 0.2s; min-width: 0; width: 100%; }
+.wallet-action-btn:hover { border-color: var(--primary); color: var(--primary-light); }
+.wallet-stats { display: flex; justify-content: center; gap: 1rem; flex-wrap: wrap; }
+.wallet-stat { text-align: center; }
+.ws-label { font-size: 0.7rem; color: var(--text-2); text-transform: uppercase; letter-spacing: 0.05em; }
+.ws-value { font-size: clamp(0.8rem, 3.5vw, 1rem); font-weight: 700; font-family: var(--mono); margin-top: 0.2rem; word-break: break-all; }
+.filter-bar { display: flex; gap: 0.5rem; padding: 0.75rem; margin-bottom: 1.25rem; overflow-x: auto; flex-wrap: nowrap; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
+.filter-bar::-webkit-scrollbar { display: none; }
+.filter-btn { padding: 0.4rem 0.875rem; border-radius: 100px; font-size: 0.8rem; font-weight: 600; color: var(--text-2); border: 1px solid var(--border); transition: all 0.2s; cursor: pointer; background: transparent; }
+.filter-btn.active { background: var(--primary); color: white; border-color: var(--primary); }
+
+/* ============================================================
+   ORDERS PAGE
+   ============================================================ */
+#orders-container { display: flex; flex-direction: column; gap: 1rem; }
+.order-full-card { padding: 1.5rem; cursor: pointer; transition: all 0.2s; }
+.order-full-card:hover { border-color: var(--primary-light); }
+.ofc-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 1rem; }
+.ofc-name { font-weight: 700; font-size: 0.95rem; }
+.ofc-date { font-size: 0.75rem; color: var(--text-2); margin-top: 0.2rem; }
+.ofc-amount { font-size: 1.1rem; font-weight: 800; font-family: var(--mono); text-align: right; margin-top: 0.35rem; }
+.ofc-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1rem; margin-bottom: 1rem; }
+.ofc-stat { display: flex; flex-direction: column; gap: 0.15rem; }
+.ofc-stat span { font-size: 0.7rem; color: var(--text-2); }
+.ofc-stat strong { font-size: 0.85rem; font-family: var(--mono); }
+.ofc-click-hint { font-size: 0.75rem; color: var(--text-3); text-align: right; margin-top: 0.5rem; }
+
+/* ============================================================
+   WITHDRAWALS PAGE
+   ============================================================ */
+.withdrawal-balance-card { padding: 1.5rem; display: flex; flex-direction: column; gap: 1.25rem; margin-bottom: 1.25rem; }
+@media (min-width: 640px) { .withdrawal-balance-card { flex-direction: row; align-items: center; justify-content: space-between; } }
+.wb-label { font-size: 0.75rem; color: var(--text-2); text-transform: uppercase; letter-spacing: 0.05em; }
+.wb-amount { font-size: 2.5rem; font-weight: 800; font-family: var(--mono); margin: 0.25rem 0; }
+.wb-min { font-size: 0.75rem; color: var(--text-3); }
+.withdrawals-list { display: flex; flex-direction: column; gap: 0.75rem; }
+.withdrawal-item { display: flex; justify-content: space-between; align-items: center; padding: 1rem; background: rgba(255,255,255,0.02); border-radius: var(--radius-sm); border: 1px solid var(--border); flex-wrap: wrap; gap: 1rem; }
+.wi-upi { font-weight: 600; font-size: 0.875rem; }
+.wi-date { font-size: 0.75rem; color: var(--text-2); margin-top: 0.15rem; }
+.wi-note { font-size: 0.7rem; color: var(--text-3); margin-top: 0.1rem; font-style: italic; }
+.wi-right { display: flex; flex-direction: column; align-items: flex-end; gap: 0.4rem; }
+.wi-amount { font-size: 1rem; font-weight: 700; font-family: var(--mono); }
+.wd-note { font-size: 0.8rem; color: var(--text-2); margin-bottom: 1rem; text-align: center; padding: 0.75rem; }
+
+/* ============================================================
+   PROFILE PAGE
+   ============================================================ */
+.profile-card { padding: 2rem; margin-bottom: 1.5rem; }
+.profile-avatar-section { display: flex; flex-direction: column; align-items: center; gap: 0.5rem; margin-bottom: 2rem; }
+.profile-avatar { width: 80px; height: 80px; background: linear-gradient(135deg, var(--primary), var(--accent)); border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 2rem; font-weight: 800; color: white; }
+.profile-name { font-size: 1.3rem; font-weight: 700; }
+.profile-email { font-size: 0.875rem; color: var(--text-2); }
+.profile-form { max-width: 480px; margin: 0 auto; }
+.profile-stats-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin-bottom: 1.5rem; }
+.psg-card { padding: 1.25rem; text-align: center; }
+.psg-label { font-size: 0.7rem; color: var(--text-2); text-transform: uppercase; letter-spacing: 0.04em; }
+.psg-value { font-size: 1rem; font-weight: 700; font-family: var(--mono); margin-top: 0.35rem; }
+.danger-zone { padding: 1.5rem; }
+.dz-title { font-size: 0.875rem; font-weight: 700; color: var(--danger); margin-bottom: 1rem; }
+
+/* ============================================================
+   MODALS
+   ============================================================ */
+.modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.75); backdrop-filter: blur(8px); z-index: 300; display: flex; align-items: flex-end; padding: 0; animation: fadeInUp 0.2s ease; }
+.modal { width: 100%; max-height: 92vh; overflow-y: auto; border-radius: 20px 20px 0 0; animation: slideUpSheet 0.3s cubic-bezier(0.4,0,0.2,1); -webkit-overflow-scrolling: touch; }
+@keyframes slideUpSheet { from { transform: translateY(100%); } to { transform: translateY(0); } }
+@media (min-width: 768px) {
+  .modal-overlay { align-items: center; padding: 1rem; }
+  .modal { max-width: 560px; border-radius: 16px; animation: fadeInUp 0.2s ease; }
+}
+.modal-lg { max-width: 720px; }
+.modal-header { display: flex; align-items: center; justify-content: space-between; padding: 1.5rem 1.5rem 0; }
+.modal-title { font-size: 1.1rem; font-weight: 700; }
+.modal-close { font-size: 1.2rem; color: var(--text-2); transition: color 0.2s; cursor: pointer; background: none; border: none; }
+.modal-close:hover { color: var(--danger); }
+.modal-body { padding: 1.5rem; }
+.order-modal-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
+.progress-ring-container { position: relative; width: 120px; height: 120px; margin: 0 auto 1.5rem; }
+.ring-label { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+.ring-percent { font-size: 1.4rem; font-weight: 800; font-family: var(--mono); }
+.ring-sub { font-size: 0.65rem; color: var(--text-2); }
+.info-grid { display: flex; flex-direction: column; gap: 0.6rem; }
+.info-row { display: flex; justify-content: space-between; font-size: 0.8rem; align-items: center; }
+.info-row span { color: var(--text-2); }
+.info-row strong { font-family: var(--mono); font-size: 0.85rem; }
+.countdown-container { padding: 1.25rem; text-align: center; margin-bottom: 1.25rem; }
+.countdown-label { font-size: 0.75rem; color: var(--text-2); text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 0.75rem; }
+.countdown-display { display: flex; align-items: center; justify-content: center; gap: 0.35rem; margin-bottom: 0.5rem; }
+.countdown-unit { display: flex; flex-direction: column; align-items: center; }
+.countdown-val { font-size: 2rem; font-weight: 800; font-family: var(--mono); color: var(--accent); line-height: 1; }
+.countdown-unit-label { font-size: 0.55rem; color: var(--text-3); text-transform: uppercase; }
+.countdown-colon { font-size: 2rem; font-weight: 800; font-family: var(--mono); color: var(--primary-light); line-height: 1; margin-top: -2px; }
+.countdown-amount { font-size: 0.8rem; color: var(--success); font-weight: 600; }
+.log-title { font-size: 0.875rem; font-weight: 700; margin-bottom: 0.75rem; }
+.log-list { display: flex; flex-direction: column; gap: 0.4rem; max-height: 200px; overflow-y: auto; }
+.log-item { display: flex; align-items: center; justify-content: space-between; font-size: 0.75rem; padding: 0.4rem 0.6rem; background: rgba(255,255,255,0.02); border-radius: 6px; }
+.log-day { color: var(--text-2); }
+.log-amount { font-family: var(--mono); font-weight: 600; }
+.log-date { color: var(--text-3); }
+.payment-product-summary { text-align: center; padding: 1.5rem; background: rgba(99,102,241,0.08); border-radius: var(--radius-sm); margin-bottom: 1.5rem; border: 1px solid rgba(99,102,241,0.2); }
+.payment-product-name { font-size: 0.9rem; color: var(--text-2); margin-bottom: 0.25rem; }
+.payment-product-amount { font-size: 2.2rem; font-weight: 800; font-family: var(--mono); }
+.payment-product-details { font-size: 0.8rem; color: var(--text-2); margin-top: 0.25rem; }
+.payment-methods { margin-bottom: 1.5rem; }
+.pm-title { font-size: 0.75rem; font-weight: 600; color: var(--text-2); text-transform: uppercase; margin-bottom: 0.75rem; }
+.pm-option { display: flex; align-items: center; gap: 0.75rem; padding: 0.875rem 1rem; border: 1px solid var(--border); border-radius: var(--radius-sm); cursor: pointer; margin-bottom: 0.5rem; transition: all 0.2s; }
+.pm-option.active { border-color: var(--primary); background: rgba(99,102,241,0.08); }
+.pm-option input { accent-color: var(--primary); }
+.pm-icon { font-size: 1.25rem; }
+.pm-info { flex: 1; }
+.pm-name { font-size: 0.875rem; font-weight: 600; }
+.pm-sub { font-size: 0.75rem; color: var(--text-2); margin-top: 0.1rem; }
+.pm-badge { font-size: 0.65rem; background: rgba(34,197,94,0.15); color: var(--success); padding: 0.15rem 0.4rem; border-radius: 4px; font-weight: 700; }
+.payment-summary-box { display: flex; flex-direction: column; gap: 0.6rem; margin-bottom: 1.5rem; }
+.payment-row { display: flex; justify-content: space-between; font-size: 0.875rem; }
+.payment-row.total { font-weight: 700; font-size: 1rem; padding-top: 0.5rem; border-top: 1px solid var(--border); }
+.payment-note { text-align: center; font-size: 0.75rem; color: var(--text-3); margin-top: 0.75rem; }
+
+/* ============================================================
+   ADMIN
+   ============================================================ */
+/* ============================================================
+   ADMIN
+   ============================================================ */
+.admin-tabs { display: flex; gap: 0.25rem; padding: 0.5rem; flex-wrap: wrap; margin-bottom: 1.5rem; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.admin-tab { padding: 0.5rem 0.75rem; border-radius: var(--radius-sm); font-size: 0.75rem; font-weight: 600; color: var(--text-2); transition: all 0.2s; white-space: nowrap; cursor: pointer; background: none; border: none; }
+.admin-tab.active { background: var(--primary); color: white; }
+.admin-section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.25rem; flex-wrap: wrap; gap: 0.75rem; }
+.admin-table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.admin-table { width: 100%; border-collapse: collapse; font-size: 0.78rem; min-width: 500px; }
+.admin-table th { text-align: left; padding: 0.6rem 0.75rem; background: rgba(255,255,255,0.03); border-bottom: 1px solid var(--border); color: var(--text-2); font-size: 0.65rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; }
+.admin-table td { padding: 0.6rem 0.75rem; border-bottom: 1px solid var(--border); vertical-align: middle; }
+.admin-table tr:last-child td { border-bottom: none; }
+.admin-table tr:hover td { background: rgba(255,255,255,0.02); }
+.admin-product-img { width: 36px; height: 28px; border-radius: 4px; object-fit: cover; }
+.admin-product-name { display: flex; align-items: center; gap: 0.5rem; }
+.action-btns { display: flex; gap: 0.4rem; align-items: center; flex-wrap: wrap; }
+.user-name-cell { display: flex; align-items: center; gap: 0.5rem; }
+.user-avatar-sm { width: 28px; height: 28px; background: linear-gradient(135deg, var(--primary), var(--accent)); border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 0.7rem; font-weight: 700; flex-shrink: 0; }
+.testimonials-admin-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 1rem; }
+.testimonial-admin-card { padding: 1.25rem; }
+.admin-analytics .stats-grid { grid-template-columns: 1fr 1fr; gap: 0.75rem; }
+@media (min-width: 1024px) { .admin-analytics .stats-grid { grid-template-columns: repeat(3, 1fr); } }
+/* ============================================================
+   RESPONSIVE
+   ============================================================ */
+@media (max-width: 1024px) {
+  .order-modal-grid { grid-template-columns: 1fr; }
+  .cart-layout { grid-template-columns: 1fr; }
+  .ofc-stats { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 768px) {
+  :root { --sidebar-w: 0px; }
+  .sidebar { transform: translateX(-100%); width: 260px; }
+  .sidebar.open { transform: translateX(0); }
+  .main-content { margin-left: 0; }
+  .topbar-menu-btn { display: flex; }
+  .mobile-bottom-nav { display: grid; }
+  .page-content { padding: 1.5rem 1rem 5rem; }
+  .landing-nav .nav-links { display: none; }
+  .mobile-menu-btn { display: block; }
+  .floating-card { display: none; }
+  .hero { padding: 3rem 1.5rem; }
+  .section { padding: 3rem 1.5rem; }
+  .stats-grid { grid-template-columns: repeat(2, 1fr); }
+  .qa-grid { grid-template-columns: repeat(4, 1fr); }
+  .form-grid { grid-template-columns: 1fr; }
+  .profile-stats-grid { grid-template-columns: 1fr; }
+  .hero-stats { gap: 1.25rem; }
+  .steps-container { grid-template-columns: 1fr; }
+  .cta-trust { gap: 1rem; }
+}
+@media (max-width: 480px) {
+  .stats-grid { grid-template-columns: 1fr; }
+  .qa-grid { grid-template-columns: repeat(2, 1fr); }
+  .ofc-stats { grid-template-columns: repeat(2, 1fr); }
+  .order-details { grid-template-columns: 1fr; }
+  .cart-item { flex-wrap: wrap; }
+  .withdrawal-balance-card { flex-direction: column; align-items: flex-start; }
+  .hero-actions { flex-direction: column; align-items: flex-start; }
+  .wallet-stats { gap: 1.5rem; }
+}
+
+.sidebar-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 199; backdrop-filter: blur(4px); opacity: 0; pointer-events: none; transition: opacity 0.3s ease; }
+.sidebar-backdrop.show { opacity: 1; pointer-events: all; }
+</style>
+</head>
+<body>
+<div id="toast-container"></div>
+<div class="sidebar-backdrop" id="sidebar-backdrop" onclick="closeSidebar()"></div>
+<div id="app">
+  <div class="loading-state" style="min-height:100vh">
+    <div class="spinner"></div>
+  </div>
+</div>
+
+<script>
+// ============================================================
+// CONFIG.JS
+// ============================================================
+const SUPABASE_CONFIG = {
+  url: 'https://kxhroukqbxeixavjwevr.supabase.co',
+  anonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imt4aHJvdWtxYnhlaXhhdmp3ZXZyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkzODQwMDMsImV4cCI6MjA5NDk2MDAwM30.xCtmH2te1x2PbXXQ_ipGxEZrF7KOWE4_1wFer7deuKE',
+};
+const APP_CONFIG = {
+  name: 'CashX',
+  tagline: 'Earn While You Sleep',
+  currency: '₹',
+  minWithdrawal: 150,
+  cashbackInterval: 24 * 60 * 60 * 1000,
+ // razorpayKeyId: 'rzp_test_YOUR_KEY',
+};
+
+let supabaseClient;
+try {
   supabaseClient = window.supabase.createClient(SUPABASE_CONFIG.url, SUPABASE_CONFIG.anonKey);
 } catch (e) {
   console.error('Supabase init failed:', e);

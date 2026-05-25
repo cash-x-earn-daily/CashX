@@ -959,18 +959,19 @@ async debitWallet(amount, type, description, refId = null, refType = null) {
     return supabaseClient.from('testimonials').insert(t);
   },
   async updateProfile(updates) { const { data, error } = await supabaseClient.from('users').update({ ...updates, updated_at: new Date().toISOString() }).eq('id', Auth.currentUser.id).select().single(); if (!error && data) Auth.currentProfile = data; return { data, error }; },
-  async getAnalytics() {
-    const [users, orders, withdrawals, transactions] = await Promise.all([
+async getAnalytics() {
+    const [users, orders, withdrawals, transactions, deposits] = await Promise.all([
       supabaseClient.from('users').select('id, created_at, total_invested, total_cashback_earned', { count: 'exact' }),
       supabaseClient.from('orders').select('id, status, amount, cashback_earned', { count: 'exact' }),
       supabaseClient.from('withdrawals').select('id, status, amount', { count: 'exact' }),
       supabaseClient.from('wallet_transactions').select('type, amount').eq('type', 'cashback'),
+      supabaseClient.from('deposits').select('id, status, amount'),
     ]);
     return {
       totalUsers: users.count || 0,
       totalOrders: orders.count || 0,
       activeOrders: (orders.data || []).filter(o => o.status === 'active').length,
-      totalRevenue: (orders.data || []).reduce((s, o) => s + parseFloat(o.amount || 0), 0),
+      totalRevenue: (deposits.data || []).filter(d => d.status === 'approved').reduce((s, d) => s + parseFloat(d.amount || 0), 0),
       totalCashbackPaid: (transactions.data || []).reduce((s, t) => s + parseFloat(t.amount || 0), 0),
       pendingWithdrawals: (withdrawals.data || []).filter(w => w.status === 'pending').length,
       totalWithdrawn: (withdrawals.data || []).filter(w => w.status === 'processed').reduce((s, w) => s + parseFloat(w.amount || 0), 0),

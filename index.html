@@ -3062,12 +3062,12 @@ window.showAdminPinModal = function() {
       btn.disabled = true; btn.textContent = 'Verifying...';
 
       const { data } = await supabaseClient
-        .from('users')
-        .select('admin_pin')
-        .eq('id', Auth.currentUser.id)
-        .single();
+  .rpc('verify_admin_pin', {
+    p_user_id: Auth.currentUser.id,
+    p_pin: pin
+  });
 
-      if (data?.admin_pin === pin) {
+if (data === true) {
         sessionStorage.setItem('admin_verified', 'true');
         modal.remove();
         resolve(true);
@@ -3108,6 +3108,7 @@ window.handleSignOut = async function() {
     window.location.reload();
   }
 };
+
 window.updateWithdrawalPreview = function(amount, balance) {
   const amt = parseFloat(amount) || 0;
   const preview = document.getElementById('wd-preview');
@@ -3119,6 +3120,7 @@ window.updateWithdrawalPreview = function(amount, balance) {
   document.getElementById('wd-fee').textContent = '-' + Utils.formatCurrency(fee);
   document.getElementById('wd-net').textContent = Utils.formatCurrency(net);
 };
+
 </script>
 </body>
 </html>

@@ -725,10 +725,14 @@ const Auth = {
     });
   },
 
-  async loadProfile() {
+ // REPLACE:
+async loadProfile() {
     if (!this.currentUser) return null;
+    const cacheKey = 'profile_' + this.currentUser.id;
+    const cached = Cache.get(cacheKey);
+    if (cached) { this.currentProfile = cached; return cached; }
     const { data, error } = await supabaseClient.from('users').select('*').eq('id', this.currentUser.id).single();
-    if (!error && data) this.currentProfile = data;
+    if (!error && data) { this.currentProfile = data; Cache.set(cacheKey, data); }
     return data;
   },
 
@@ -795,8 +799,8 @@ handleRoute: async function() {
 
   // Wait for profile to load if user is logged in but profile missing
   if (Auth.isLoggedIn() && !Auth.currentProfile) {
-    await Auth.loadProfile();
-  }
+  await Auth.loadProfile();
+}
 
   if (this.protectedRoutes.includes(route) && !Auth.isLoggedIn()) { 
     this.navigate('login'); return; 
@@ -983,7 +987,7 @@ const ActiveTimers = {};
 // ── CACHE ──
 const Cache = {
   data: {},
-  ttl: 30000, // 30 seconds
+  ttl: 120000, // 30 seconds
   set(key, value) { this.data[key] = { value, time: Date.now() }; },
   get(key) {
     const d = this.data[key];
@@ -1426,8 +1430,8 @@ window.updatePassword = async function() {
 // DASHBOARD
 // ============================================================
 window.renderDashboard = async function() {
-  await clearAllTimers();
-  const profile = Auth.currentProfile;
+ clearAllTimers();
+const profile = Auth.currentProfile;
 
   // Render shell immediately with cached/existing profile
   document.getElementById('app').innerHTML = `
@@ -1454,8 +1458,10 @@ window.renderDashboard = async function() {
   `;
 
   // Load data in parallel
-  const [freshProfile, ordersRes, transactions] = await Promise.all([
-    Auth.loadProfile().catch(() => profile),
+const [freshProfile, ordersRes, transactions] = await Promise.all([
+    Cache.get('profile_' + Auth.currentUser.id)
+      ? Promise.resolve(Auth.currentProfile)
+      : Auth.loadProfile().catch(() => profile),
     DB.getOrders().catch(() => ({ data: [] })),
     DB.getWalletTransactions(5).catch(() => [])
   ]);

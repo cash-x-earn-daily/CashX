@@ -2833,6 +2833,52 @@ window.shareReferral = function(code) {
   }
 };
 
+
+window.showPasswordResetModal = function() {
+  document.getElementById('app').innerHTML = `
+    <div class="auth-page">
+      <div class="auth-bg"><div class="orb orb-1"></div><div class="orb orb-2"></div></div>
+      <div class="auth-container">
+        <div class="auth-brand">
+          <div class="brand-logo">₹</div>
+          <span class="brand-name">Cash<span class="accent">X</span></span>
+        </div>
+        <div class="auth-card glass-card animate-in">
+          <h2 style="font-size:1.25rem;font-weight:700;margin-bottom:0.5rem">Set New Password</h2>
+          <p style="font-size:0.85rem;color:var(--text-2);margin-bottom:1.5rem">Enter your new password below.</p>
+          <div class="form-group">
+            <label class="form-label">New Password</label>
+            <input type="password" class="form-input" id="new-password" placeholder="Min 8 characters">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Confirm Password</label>
+            <input type="password" class="form-input" id="confirm-password" placeholder="Repeat password">
+          </div>
+          <button class="btn btn-primary w-full btn-lg" onclick="submitNewPassword()">
+            Update Password →
+          </button>
+        </div>
+      </div>
+    </div>
+  `;
+};
+
+window.submitNewPassword = async function() {
+  const newPass = document.getElementById('new-password').value;
+  const confirmPass = document.getElementById('confirm-password').value;
+  
+  if (!newPass || newPass.length < 8) { Toast.show('Password must be at least 8 characters', 'warning'); return; }
+  if (newPass !== confirmPass) { Toast.show('Passwords do not match', 'error'); return; }
+  
+  const { error } = await supabaseClient.auth.updateUser({ password: newPass });
+  
+  if (error) { Toast.show(error.message, 'error'); return; }
+  
+  Toast.show('Password updated successfully! Please login.', 'success');
+  await supabaseClient.auth.signOut();
+  Router.navigate('login');
+};
+
 // ============================================================
 // INIT
 // ============================================================
@@ -2846,9 +2892,23 @@ window.addEventListener('load', async () => {
     </div>
   `;
 
-  // Handle password reset redirect
-if (window.location.hash.includes('type=recovery')) {
+
+// Handle password reset from email link
+const fullHash = window.location.hash;
+if (fullHash.includes('type=recovery')) {
+  const params = new URLSearchParams(fullHash.replace('#', ''));
+  const accessToken = params.get('access_token');
+  const refreshToken = params.get('refresh_token');
+  
+  if (accessToken) {
+    await supabaseClient.auth.setSession({
+      access_token: accessToken,
+      refresh_token: refreshToken
+    });
+  }
   window.location.hash = 'reset';
+  await window.renderResetPassword();
+  return;
 }
   await Auth.init();
   await Router.handleRoute();

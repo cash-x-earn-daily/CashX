@@ -2892,19 +2892,20 @@ window.addEventListener('load', async () => {
     </div>
   `;
 
-
 // Handle password reset from email link
-const fullHash = window.location.hash;
-if (fullHash.includes('type=recovery')) {
-  const params = new URLSearchParams(fullHash.replace('#', ''));
-  const accessToken = params.get('access_token');
-  const refreshToken = params.get('refresh_token');
-  
-  if (accessToken) {
-    await supabaseClient.auth.setSession({
-      access_token: accessToken,
-      refresh_token: refreshToken
-    });
+const urlParams = new URLSearchParams(window.location.search);
+const tokenHash = urlParams.get('token_hash');
+const type = urlParams.get('type');
+
+if (tokenHash && type === 'recovery') {
+  const { error } = await supabaseClient.auth.verifyOtp({
+    token_hash: tokenHash,
+    type: 'recovery'
+  });
+  if (error) {
+    Toast.show('Reset link expired. Please request a new one.', 'error');
+    await window.renderLogin();
+    return;
   }
   window.location.hash = 'reset';
   await window.renderResetPassword();

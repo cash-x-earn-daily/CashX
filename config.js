@@ -50,13 +50,30 @@ const Auth = {
     });
   },
 
-  async loadProfile() {
+async loadProfile() {
     if (!this.currentUser) return null;
-    const { data, error } = await supabase
+    let { data, error } = await supabase
       .from('users')
       .select('*')
       .eq('id', this.currentUser.id)
-      .single();
+      .maybeSingle();
+
+    // Self-heal: if signup trigger silently failed, no row exists yet.
+    // Create it now so the app never gets stuck with a null profile.
+    if (!error && !data) {
+      const { data: created, error: createError } = await supabase
+        .from('users')
+        .upsert({
+          id: this.currentUser.id,
+          email: this.currentUser.email,
+          full_name: this.currentUser.user_metadata?.full_name || '',
+          referred_by: this.currentUser.user_metadata?.referred_by || null,
+        })
+        .select()
+        .maybeSingle();
+      if (!createError) data = created;
+    }
+
     if (!error) this.currentProfile = data;
     return data;
   },
@@ -380,12 +397,22 @@ const DB = {
     return supabase.from('testimonials').insert(t);
   },
 
-  // Profile
+// Profile
   async updateProfile(updates) {
-    const { data, error } = await supabase.from('users').update({ ...updates, updated_at: new Date().toISOString() }).eq('id', Auth.currentUser.id).select().single();
+    const { data, error } = await supabase
+      .from('users')
+      .upsert({
+        id: Auth.currentUser.id,
+        email: Auth.currentUser.email,
+        ...updates,
+        updated_at: new Date().toISOString()
+      })
+      .select()
+      .maybeSingle();
     if (!error) Auth.currentProfile = data;
     return { data, error };
   },
+ 
 
   // Analytics (admin)
   async getAnalytics() {

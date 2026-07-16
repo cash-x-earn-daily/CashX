@@ -2,12 +2,6 @@
 // CONFIG.JS - Supabase Configuration & App Constants
 // ============================================================
 
-const SUPABASE_CONFIG = {
-  // ⚠️ REPLACE THESE WITH YOUR ACTUAL SUPABASE CREDENTIALS
-  url: 'https://YOUR_PROJECT_REF.supabase.co',
-  anonKey: 'YOUR_ANON_KEY_HERE',
-};
-
 const APP_CONFIG = {
   name: 'CashX',
   tagline: 'Earn While You Sleep',
